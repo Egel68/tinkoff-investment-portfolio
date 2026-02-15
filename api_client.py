@@ -52,6 +52,28 @@ class PositionInfo:
 
 
 @dataclass
+class AggregatedPosition:
+    """Агрегированная позиция по всем счетам."""
+
+    figi: str
+    name: str
+    ticker: str
+    instrument_type: str
+    currency: str
+    sector: str
+    country: str
+    total_quantity: Decimal
+    total_avg_cost: Decimal  # сумма средних стоимостей
+    total_market_cost: Decimal  # сумма рыночных стоимостей
+    weighted_avg_price: Decimal  # средневзвешенная цена покупки
+    current_price: Decimal
+    profit_loss: Decimal
+    profit_loss_pct: Decimal
+    share_of_total: Decimal  # доля от всего капитала
+    accounts: list[str] = field(default_factory=list)  # на каких счетах есть
+
+
+@dataclass
 class AccountInfo:
     """Один брокерский счёт."""
 
@@ -88,7 +110,6 @@ class TinkoffApiClient:
         self._instr_cache: dict[str, dict] = {}
 
     def test_connection(self) -> tuple[bool, str]:
-        """Проверка токена."""
         try:
             with Client(self.token) as cl:
                 accs = cl.users.get_accounts().accounts
@@ -108,7 +129,6 @@ class TinkoffApiClient:
         return t if isinstance(t, int) else getattr(t, "value", t)
 
     def _fetch_instrument(self, cl, figi: str) -> dict:
-        """Получение информации по FIGI с кешированием."""
         if figi in self._instr_cache:
             return self._instr_cache[figi]
 
@@ -123,7 +143,6 @@ class TinkoffApiClient:
             instrument_type="unknown",
         )
 
-        # Способ 1: универсальный get_instrument_by
         try:
             resp = cl.instruments.get_instrument_by(
                 id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI,
@@ -146,7 +165,6 @@ class TinkoffApiClient:
         except Exception:
             pass
 
-        # Способ 2: перебор по типам
         for method_name in (
             "share_by",
             "bond_by",
@@ -181,18 +199,16 @@ class TinkoffApiClient:
         return info
 
     def get_all_accounts(self) -> tuple[list[AccountInfo], Decimal]:
-        """Загрузка всех счетов с позициями."""
         accounts_out: list[AccountInfo] = []
 
         with Client(self.token) as cl:
             raw_accounts = cl.users.get_accounts().accounts
 
-            # 1) Собираем портфели, считаем общий капитал
             portfolios = {}
             total_capital = Decimal("0")
 
             for acc in raw_accounts:
-                if self._status_val(acc) == 3:  # закрытый
+                if self._status_val(acc) == 3:
                     continue
                 try:
                     pf = cl.operations.get_portfolio(account_id=acc.id)
@@ -201,7 +217,6 @@ class TinkoffApiClient:
                 except Exception as e:
                     print(f"⚠ Портфель {acc.id}: {e}")
 
-            # 2) Обработка каждого счёта
             for acc in raw_accounts:
                 if acc.id not in portfolios:
                     continue
@@ -232,7 +247,6 @@ class TinkoffApiClient:
                     total_value=account_total,
                 )
 
-                # 3) Позиции
                 for pos in pf.positions:
                     figi = pos.figi or ""
 
@@ -312,7 +326,6 @@ class TinkoffApiClient:
                     )
                     acc_info.positions.append(position)
 
-                # 4) Денежные остатки
                 try:
                     pos_resp = cl.operations.get_positions(account_id=acc.id)
                     for m in pos_resp.money:
@@ -325,3 +338,87 @@ class TinkoffApiClient:
                 accounts_out.append(acc_info)
 
         return accounts_out, total_capital
+
+    @staticmethod
+    def aggregate_positions(
+        accounts: list[AccountInfo], total_capital: Decimal
+    ) -> list[AggregatedPosition]:
+        """
+        Агрегация одинаковых бумаг со всех счетов.
+        Группировка по FIGI (или ticker+name если figi пустой).
+        """
+        aggregated: dict[str, dict] = {}
+
+        for acc in accounts:
+            for pos in acc.positions:
+                key = pos.figi if pos.figi else f"{pos.ticker}_{pos.name}"
+
+                if key not in aggregated:
+                    aggregated[key] = {
+                        "figi": pos.figi,
+                        "name": pos.name,
+                        "ticker": pos.ticker,
+                        "instrument_type": pos.instrument_type,
+                        "currency": pos.currency,
+                        "sector": pos.sector,
+                        "country": pos.country,
+                        "current_price": pos.current_price,
+                        "total_quantity": Decimal("0"),
+                        "total_avg_cost": Decimal("0"),
+                        "total_market_cost": Decimal("0"),
+                        "accounts": [],
+                    }
+
+                agg = aggregated[key]
+                agg["total_quantity"] += pos.quantity
+                agg["total_avg_cost"] += pos.average_cost
+                agg["total_market_cost"] += pos.market_cost
+                agg["current_price"] = pos.current_price  # обновляем до последней
+
+                if acc.name not in agg["accounts"]:
+                    agg["accounts"].append(acc.name)
+
+        result = []
+        for key, agg in aggregated.items():
+            total_qty = agg["total_quantity"]
+            total_avg = agg["total_avg_cost"]
+            total_mkt = agg["total_market_cost"]
+
+            weighted_avg_price = (
+                (total_avg / total_qty) if total_qty != 0 else Decimal("0")
+            )
+
+            pnl = total_mkt - total_avg
+            pnl_pct = (
+                (pnl / total_avg * Decimal("100")) if total_avg != 0 else Decimal("0")
+            )
+
+            share = (
+                (total_mkt / total_capital * Decimal("100"))
+                if total_capital != 0
+                else Decimal("0")
+            )
+
+            result.append(
+                AggregatedPosition(
+                    figi=agg["figi"],
+                    name=agg["name"],
+                    ticker=agg["ticker"],
+                    instrument_type=agg["instrument_type"],
+                    currency=agg["currency"],
+                    sector=agg["sector"],
+                    country=agg["country"],
+                    total_quantity=total_qty,
+                    total_avg_cost=total_avg,
+                    total_market_cost=total_mkt,
+                    weighted_avg_price=weighted_avg_price,
+                    current_price=agg["current_price"],
+                    profit_loss=pnl,
+                    profit_loss_pct=pnl_pct,
+                    share_of_total=share,
+                    accounts=agg["accounts"],
+                )
+            )
+
+        result.sort(key=lambda p: p.total_market_cost, reverse=True)
+        return result

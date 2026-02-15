@@ -7,7 +7,7 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from api_client import AccountInfo, TinkoffApiClient
+from api_client import AccountInfo, AggregatedPosition, TinkoffApiClient
 from config import EXCEL_FILENAME, TOKEN
 from excel_export import ExcelExporter
 
@@ -19,11 +19,12 @@ class PortfolioApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("📈 Т-Инвестиции — Анализатор портфеля")
-        self.geometry("1100x750")
-        self.minsize(900, 600)
+        self.geometry("1200x800")
+        self.minsize(1000, 650)
 
         self.client: TinkoffApiClient | None = None
         self.accounts: list[AccountInfo] = []
+        self.aggregated: list[AggregatedPosition] = []
         self.total_capital = Decimal("0")
 
         self._build()
@@ -134,7 +135,8 @@ class PortfolioApp(ctk.CTk):
 
         def job():
             ok, msg = self.client.test_connection()
-            self.after(0, lambda _ok=ok, _msg=msg: self._on_connected(_ok, _msg))
+            result_ok, result_msg = ok, msg
+            self.after(0, lambda: self._on_connected(result_ok, result_msg))
 
         threading.Thread(target=job, daemon=True).start()
 
@@ -155,21 +157,24 @@ class PortfolioApp(ctk.CTk):
         def job():
             try:
                 accs, tot = self.client.get_all_accounts()
-                self.after(0, lambda: self._on_loaded(accs, tot))
+                agg = TinkoffApiClient.aggregate_positions(accs, tot)
+                self.after(0, lambda: self._on_loaded(accs, tot, agg))
             except Exception as e:
-                err_msg = str(e)  # <-- фикс
+                err_msg = str(e)
                 self.after(0, lambda: self._on_load_err(err_msg))
 
         threading.Thread(target=job, daemon=True).start()
 
-    def _on_loaded(self, accs, total):
+    def _on_loaded(self, accs, total, aggregated):
         self._set_busy(False)
         self.accounts = accs
         self.total_capital = total
+        self.aggregated = aggregated
         self.lbl_capital.configure(text=f"💰 Общий капитал: {total:,.2f} ₽")
         n_pos = sum(len(a.positions) for a in accs)
         self.lbl_status.configure(
-            text=f"✅ {len(accs)} счетов, {n_pos} позиций", text_color="#27AE60"
+            text=f"✅ {len(accs)} счетов, {n_pos} позиций, {len(aggregated)} уникальных бумаг",
+            text_color="#27AE60",
         )
         self._fill_tabs()
 
@@ -184,9 +189,21 @@ class PortfolioApp(ctk.CTk):
         for name in list(self.tabs._tab_dict.keys()):
             self.tabs.delete(name)
 
-        # Сводка
+        # 1) Сводка
         t0 = self.tabs.add("📊 Сводка")
-        sf = ctk.CTkScrollableFrame(t0)
+        self._fill_summary_tab(t0)
+
+        # 2) Все позиции
+        t_all = self.tabs.add("📦 Все позиции")
+        self._fill_aggregated_tab(t_all)
+
+        # 3) По счетам
+        for acc in self.accounts:
+            tab = self.tabs.add(f"🏦 {acc.name}"[:30])
+            self._fill_account_tab(tab, acc)
+
+    def _fill_summary_tab(self, parent):
+        sf = ctk.CTkScrollableFrame(parent)
         sf.pack(fill="both", expand=True, padx=4, pady=4)
 
         for acc in self.accounts:
@@ -212,10 +229,100 @@ class PortfolioApp(ctk.CTk):
                 text_color="#BDC3C7",
             ).pack(anchor="w", padx=12, pady=(2, 8))
 
-        # По счетам
-        for acc in self.accounts:
-            tab = self.tabs.add(f"🏦 {acc.name}"[:30])
-            self._fill_account_tab(tab, acc)
+    def _fill_aggregated_tab(self, parent):
+        """Вкладка со всеми позициями, агрегированными по бумагам."""
+        sf = ctk.CTkScrollableFrame(parent)
+        sf.pack(fill="both", expand=True, padx=4, pady=4)
+
+        if not self.aggregated:
+            ctk.CTkLabel(sf, text="📭 Нет позиций", font=ctk.CTkFont(size=14)).pack(
+                expand=True, pady=40
+            )
+            return
+
+        # Статистика сверху
+        total_pnl = sum(p.profit_loss for p in self.aggregated)
+        total_avg = sum(p.total_avg_cost for p in self.aggregated)
+        total_pnl_pct = (total_pnl / total_avg * 100) if total_avg else Decimal(0)
+        pnl_sign = "+" if total_pnl >= 0 else ""
+        pnl_color = "#27AE60" if total_pnl >= 0 else "#E74C3C"
+
+        stats_frame = ctk.CTkFrame(sf, corner_radius=8, fg_color="#1a1a2e")
+        stats_frame.pack(fill="x", padx=4, pady=(4, 8))
+
+        ctk.CTkLabel(
+            stats_frame,
+            text=(
+                f"📦 Уникальных бумаг: {len(self.aggregated)}  ·  "
+                f"💰 Капитал: {self.total_capital:,.2f} ₽  ·  "
+                f"P&L: {pnl_sign}{total_pnl:,.2f} ₽ ({pnl_sign}{total_pnl_pct:.2f}%)"
+            ),
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=pnl_color,
+        ).pack(padx=12, pady=10)
+
+        # Заголовок таблицы
+        hdr = ctk.CTkFrame(sf, corner_radius=4, fg_color="#1F4E79")
+        hdr.pack(fill="x", padx=2, pady=(2, 0))
+
+        cols = [
+            ("№", 35),
+            ("Тикер", 80),
+            ("Название", 160),
+            ("Тип", 70),
+            ("Кол-во", 65),
+            ("Ср.взв.\nцена", 90),
+            ("Текущая", 90),
+            ("P&L", 100),
+            ("P&L %", 65),
+            ("Доля\nкап.%", 55),
+            ("Счета", 140),
+        ]
+        for txt, w in cols:
+            ctk.CTkLabel(
+                hdr,
+                text=txt,
+                width=w,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                text_color="white",
+            ).pack(side="left", padx=2, pady=4)
+
+        # Строки
+        type_ru = {
+            "share": "Акция",
+            "bond": "Облиг.",
+            "etf": "ETF",
+            "currency": "Валюта",
+            "futures": "Фьюч.",
+            "option": "Опцион",
+        }
+
+        for i, p in enumerate(self.aggregated):
+            bg = "#2C3E50" if i % 2 == 0 else "#34495E"
+            row = ctk.CTkFrame(sf, corner_radius=3, fg_color=bg)
+            row.pack(fill="x", padx=2, pady=1)
+
+            pnl_c = "#27AE60" if p.profit_loss >= 0 else "#E74C3C"
+            s = "+" if p.profit_loss >= 0 else ""
+            accounts_str = ", ".join(p.accounts)
+
+            data = [
+                (f"{i + 1}", 35, "#8899AA"),
+                (p.ticker, 80, "white"),
+                (p.name[:20], 160, "#ECF0F1"),
+                (type_ru.get(p.instrument_type, p.instrument_type), 70, "#BDC3C7"),
+                (f"{p.total_quantity:.0f}", 65, "white"),
+                (f"{p.weighted_avg_price:,.2f}", 90, "white"),
+                (f"{p.current_price:,.2f}", 90, "white"),
+                (f"{s}{p.profit_loss:,.2f}", 100, pnl_c),
+                (f"{s}{p.profit_loss_pct:.1f}%", 65, pnl_c),
+                (f"{p.share_of_total:.1f}%", 55, "#3498DB"),
+                (accounts_str[:20], 140, "#8899AA"),
+            ]
+            for txt, w, clr in data:
+                ctk.CTkLabel(
+                    row, text=txt, width=w, font=ctk.CTkFont(size=10), text_color=clr
+                ).pack(side="left", padx=2, pady=3)
 
     def _fill_account_tab(self, parent, acc: AccountInfo):
         sf = ctk.CTkScrollableFrame(parent)
@@ -251,7 +358,6 @@ class PortfolioApp(ctk.CTk):
                 text_color="white",
             ).pack(side="left", padx=2, pady=4)
 
-        # Строки
         for i, p in enumerate(acc.positions):
             bg = "#2C3E50" if i % 2 == 0 else "#34495E"
             row = ctk.CTkFrame(sf, corner_radius=3, fg_color=bg)
@@ -294,10 +400,15 @@ class PortfolioApp(ctk.CTk):
 
         def job():
             try:
-                p = ExcelExporter().export(self.accounts, self.total_capital, fp)
+                p = ExcelExporter().export(
+                    self.accounts,
+                    self.total_capital,
+                    fp,
+                    aggregated=self.aggregated,
+                )
                 self.after(0, lambda: self._on_exported(p))
             except Exception as e:
-                err_msg = str(e)  # <-- сохраняем строку ДО выхода из except
+                err_msg = str(e)
                 self.after(0, lambda: self._on_export_err(err_msg))
 
         threading.Thread(target=job, daemon=True).start()

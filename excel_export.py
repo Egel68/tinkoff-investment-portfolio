@@ -6,7 +6,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from api_client import AccountInfo
+from api_client import AccountInfo, AggregatedPosition
 from config import COLORS
 
 
@@ -62,12 +62,23 @@ class ExcelExporter:
             ws.column_dimensions[letter].width = min(max(max_length + 3, 10), 38)
 
     def export(
-        self, accounts: list[AccountInfo], total_capital: Decimal, filepath: str
+        self,
+        accounts: list[AccountInfo],
+        total_capital: Decimal,
+        filepath: str,
+        aggregated: list[AggregatedPosition] = None,
     ) -> str:
-        """Главный метод — экспорт всех счетов в Excel."""
+        """Главный метод — экспорт в Excel."""
+        # Сводка
         ws0 = self.wb.create_sheet("Сводка")
         self._write_summary(ws0, accounts, total_capital)
 
+        # Все позиции (агрегированные)
+        if aggregated:
+            ws_all = self.wb.create_sheet("Все позиции")
+            self._write_aggregated(ws_all, aggregated, total_capital)
+
+        # По каждому счёту
         for i, acc in enumerate(accounts):
             safe = (
                 acc.name.replace("/", "-")
@@ -147,6 +158,112 @@ class ExcelExporter:
                     ws.cell(r, c, f"{amt:,.2f} {cur}").font = self.font_n
                     c += 1
 
+        self._auto_width(ws)
+
+    def _write_aggregated(
+        self, ws, aggregated: list[AggregatedPosition], total_capital: Decimal
+    ):
+        """Лист со всеми позициями, агрегированными по FIGI."""
+        ws.merge_cells("A1:N1")
+        ws["A1"].value = "Все позиции — сводка по всем счетам"
+        ws["A1"].font = self.font_title
+        ws["A1"].alignment = Alignment("center")
+
+        ws.merge_cells("A2:N2")
+        ws["A2"].value = (
+            f"Общий капитал: {total_capital:,.2f} ₽  |  "
+            f"Уникальных бумаг: {len(aggregated)}"
+        )
+        ws["A2"].font = Font("Calibri", 12, bold=True, color=COLORS["positive"])
+        ws["A2"].alignment = Alignment("center")
+
+        hdrs = [
+            "№",
+            "Тикер",
+            "Название",
+            "Тип",
+            "Сектор",
+            "Валюта",
+            "Кол-во\n(всего)",
+            "Ср.взвеш.\nцена",
+            "Текущая\nцена",
+            "Ср. стоим.\n(всего)",
+            "Рыночная\nстоим.",
+            "P&L",
+            "P&L, %",
+            "Доля от\nкапитала, %",
+            "Счета",
+        ]
+        hr = 4
+        for c, h in enumerate(hdrs, 1):
+            ws.cell(hr, c, h)
+        self._style_header_row(ws, hr, len(hdrs))
+
+        for idx, p in enumerate(aggregated, 1):
+            r = hr + idx
+            accounts_str = ", ".join(p.accounts)
+            vals = [
+                idx,
+                p.ticker,
+                p.name,
+                self._type_ru(p.instrument_type),
+                p.sector,
+                p.currency.upper() if p.currency else "",
+                float(p.total_quantity),
+                float(p.weighted_avg_price),
+                float(p.current_price),
+                float(p.total_avg_cost),
+                float(p.total_market_cost),
+                float(p.profit_loss),
+                float(p.profit_loss_pct),
+                float(p.share_of_total),
+                accounts_str,
+            ]
+            for c, v in enumerate(vals, 1):
+                cell = ws.cell(r, c, v)
+                cell.border = self.thin_border
+                cell.alignment = Alignment("center", "center")
+                cell.font = self.font_n
+                if c in (8, 9, 10, 11, 12):
+                    cell.number_format = "#,##0.00"
+                if c in (13, 14):
+                    cell.number_format = "0.00"
+                if c == 12:
+                    cell.font = self._pnl_font(p.profit_loss)
+                if c == 13:
+                    cell.font = self._pnl_font(p.profit_loss_pct)
+                if c == 15:
+                    cell.alignment = Alignment("left", "center", wrap_text=True)
+
+            if idx % 2 == 0:
+                for c in range(1, len(hdrs) + 1):
+                    ws.cell(r, c).fill = self.alt_fill
+
+        # Итого
+        tr = hr + len(aggregated) + 1
+        ws.cell(tr, 1, "ИТОГО").font = self.font_b
+        ws.cell(tr, 1).border = self.thin_border
+
+        t_avg = sum(p.total_avg_cost for p in aggregated)
+        t_mkt = sum(p.total_market_cost for p in aggregated)
+        t_pnl = t_mkt - t_avg
+        t_pnl_pct = (t_pnl / t_avg * 100) if t_avg else Decimal(0)
+        t_share = sum(p.share_of_total for p in aggregated)
+
+        for c, v in {
+            10: t_avg,
+            11: t_mkt,
+            12: t_pnl,
+            13: t_pnl_pct,
+            14: t_share,
+        }.items():
+            cell = ws.cell(tr, c, float(v))
+            cell.font = self.font_b if c != 12 else self._pnl_font(v, bold=True)
+            cell.border = self.thin_border
+            cell.alignment = Alignment("center")
+            cell.number_format = "#,##0.00" if c in (10, 11, 12) else "0.00"
+
+        ws.freeze_panes = f"A{hr + 1}"
         self._auto_width(ws)
 
     def _write_account(self, ws, acc: AccountInfo, total_capital: Decimal):
@@ -230,7 +347,6 @@ class ExcelExporter:
                 for c in range(1, len(hdrs) + 1):
                     ws.cell(r, c).fill = self.alt_fill
 
-        # Итого
         tr = hr + len(acc.positions) + 1
         ws.cell(tr, 1, "ИТОГО").font = self.font_b
         ws.cell(tr, 1).border = self.thin_border

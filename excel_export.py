@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 
 from api_client import AccountInfo
 from config import COLORS
@@ -48,14 +49,22 @@ class ExcelExporter:
             cell.border = self.thin_border
 
     def _auto_width(self, ws):
-        for col_cells in ws.columns:
-            letter = col_cells[0].column_letter
-            mx = max((len(str(c.value or "")) for c in col_cells), default=8)
-            ws.column_dimensions[letter].width = min(max(mx + 3, 10), 38)
+        for col_idx in range(1, ws.max_column + 1):
+            letter = get_column_letter(col_idx)
+            max_length = 0
+            for row_idx in range(1, ws.max_row + 1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                try:
+                    if cell.value is not None:
+                        max_length = max(max_length, len(str(cell.value)))
+                except Exception:
+                    pass
+            ws.column_dimensions[letter].width = min(max(max_length + 3, 10), 38)
 
     def export(
         self, accounts: list[AccountInfo], total_capital: Decimal, filepath: str
     ) -> str:
+        """Главный метод — экспорт всех счетов в Excel."""
         ws0 = self.wb.create_sheet("Сводка")
         self._write_summary(ws0, accounts, total_capital)
 

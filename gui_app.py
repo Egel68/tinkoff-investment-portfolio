@@ -134,7 +134,7 @@ class PortfolioApp(ctk.CTk):
 
         def job():
             ok, msg = self.client.test_connection()
-            self.after(0, lambda: self._on_connected(ok, msg))
+            self.after(0, lambda _ok=ok, _msg=msg: self._on_connected(_ok, _msg))
 
         threading.Thread(target=job, daemon=True).start()
 
@@ -157,7 +157,8 @@ class PortfolioApp(ctk.CTk):
                 accs, tot = self.client.get_all_accounts()
                 self.after(0, lambda: self._on_loaded(accs, tot))
             except Exception as e:
-                self.after(0, lambda: self._on_load_err(str(e)))
+                err_msg = str(e)  # <-- фикс
+                self.after(0, lambda: self._on_load_err(err_msg))
 
         threading.Thread(target=job, daemon=True).start()
 
@@ -296,7 +297,8 @@ class PortfolioApp(ctk.CTk):
                 p = ExcelExporter().export(self.accounts, self.total_capital, fp)
                 self.after(0, lambda: self._on_exported(p))
             except Exception as e:
-                self.after(0, lambda: self._on_export_err(str(e)))
+                err_msg = str(e)  # <-- сохраняем строку ДО выхода из except
+                self.after(0, lambda: self._on_export_err(err_msg))
 
         threading.Thread(target=job, daemon=True).start()
 

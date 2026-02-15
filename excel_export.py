@@ -1,0 +1,263 @@
+"""Красивый Excel-отчёт."""
+
+from decimal import Decimal
+
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+from api_client import AccountInfo
+from config import COLORS
+
+
+class ExcelExporter:
+    def __init__(self):
+        self.wb = Workbook()
+        self.wb.remove(self.wb.active)
+
+        self.hdr_fill = PatternFill("solid", fgColor=COLORS["header_fill"])
+        self.hdr_font = Font("Calibri", 11, bold=True, color=COLORS["header_font"])
+        self.alt_fill = PatternFill("solid", fgColor=COLORS["alt_row"])
+        self.thin_border = Border(
+            left=Side("thin", color=COLORS["border"]),
+            right=Side("thin", color=COLORS["border"]),
+            top=Side("thin", color=COLORS["border"]),
+            bottom=Side("thin", color=COLORS["border"]),
+        )
+        self.font_pos = Font("Calibri", 10, color=COLORS["positive"])
+        self.font_neg = Font("Calibri", 10, color=COLORS["negative"])
+        self.font_n = Font("Calibri", 10, color=COLORS["neutral"])
+        self.font_b = Font("Calibri", 10, bold=True, color=COLORS["neutral"])
+        self.font_title = Font("Calibri", 14, bold=True, color=COLORS["header_fill"])
+
+    def _pnl_font(self, v: Decimal, bold=False) -> Font:
+        c = (
+            COLORS["positive"]
+            if v > 0
+            else COLORS["negative"]
+            if v < 0
+            else COLORS["neutral"]
+        )
+        return Font("Calibri", 10, bold=bold, color=c)
+
+    def _style_header_row(self, ws, row, ncols):
+        for c in range(1, ncols + 1):
+            cell = ws.cell(row, c)
+            cell.fill = self.hdr_fill
+            cell.font = self.hdr_font
+            cell.alignment = Alignment("center", "center", wrap_text=True)
+            cell.border = self.thin_border
+
+    def _auto_width(self, ws):
+        for col_cells in ws.columns:
+            letter = col_cells[0].column_letter
+            mx = max((len(str(c.value or "")) for c in col_cells), default=8)
+            ws.column_dimensions[letter].width = min(max(mx + 3, 10), 38)
+
+    def export(
+        self, accounts: list[AccountInfo], total_capital: Decimal, filepath: str
+    ) -> str:
+        ws0 = self.wb.create_sheet("Сводка")
+        self._write_summary(ws0, accounts, total_capital)
+
+        for i, acc in enumerate(accounts):
+            safe = (
+                acc.name.replace("/", "-")
+                .replace("\\", "-")
+                .replace("*", "")
+                .replace("?", "")
+                .replace("[", "(")
+                .replace("]", ")")
+            )
+            name = f"{i + 1}. {safe}"[:31]
+            ws = self.wb.create_sheet(name)
+            self._write_account(ws, acc, total_capital)
+
+        self.wb.save(filepath)
+        return filepath
+
+    def _write_summary(self, ws, accounts, total_capital):
+        ws.merge_cells("A1:G1")
+        ws["A1"].value = "Сводка по всем счетам Т-Инвестиций"
+        ws["A1"].font = self.font_title
+        ws["A1"].alignment = Alignment("center")
+
+        ws.merge_cells("A2:G2")
+        ws["A2"].value = f"Общий капитал: {total_capital:,.2f} ₽"
+        ws["A2"].font = Font("Calibri", 12, bold=True, color=COLORS["positive"])
+        ws["A2"].alignment = Alignment("center")
+
+        hdrs = [
+            "Счёт",
+            "Тип",
+            "Статус",
+            "Дата открытия",
+            "Стоимость, ₽",
+            "Доля от капитала, %",
+            "Позиций",
+        ]
+        r = 4
+        for c, h in enumerate(hdrs, 1):
+            ws.cell(r, c, h)
+        self._style_header_row(ws, r, len(hdrs))
+
+        for acc in accounts:
+            r += 1
+            share = (
+                (acc.total_value / total_capital * 100) if total_capital else Decimal(0)
+            )
+            vals = [
+                acc.name,
+                acc.acc_type,
+                acc.status,
+                acc.opened_date,
+                float(acc.total_value),
+                float(share),
+                len(acc.positions),
+            ]
+            for c, v in enumerate(vals, 1):
+                cell = ws.cell(r, c, v)
+                cell.font = self.font_n
+                cell.border = self.thin_border
+                cell.alignment = Alignment("center")
+                if c == 5:
+                    cell.number_format = "#,##0.00"
+                if c == 6:
+                    cell.number_format = "0.00"
+            if (r - 4) % 2 == 0:
+                for c in range(1, len(hdrs) + 1):
+                    ws.cell(r, c).fill = self.alt_fill
+
+        r += 2
+        ws.cell(r, 1, "Денежные средства:").font = self.font_b
+        for acc in accounts:
+            if acc.total_currencies:
+                r += 1
+                ws.cell(r, 1, acc.name).font = self.font_b
+                c = 2
+                for cur, amt in acc.total_currencies.items():
+                    ws.cell(r, c, f"{amt:,.2f} {cur}").font = self.font_n
+                    c += 1
+
+        self._auto_width(ws)
+
+    def _write_account(self, ws, acc: AccountInfo, total_capital: Decimal):
+        ws.merge_cells("A1:P1")
+        ws["A1"].value = f"{acc.name} ({acc.acc_type})"
+        ws["A1"].font = self.font_title
+        ws["A1"].alignment = Alignment("center")
+
+        ws.merge_cells("A2:H2")
+        ws["A2"].value = (
+            f"Статус: {acc.status} | Открыт: {acc.opened_date} | "
+            f"Стоимость: {acc.total_value:,.2f} ₽"
+        )
+        ws["A2"].font = Font("Calibri", 11, color=COLORS["neutral"])
+
+        if acc.total_currencies:
+            ws.merge_cells("A3:H3")
+            ws["A3"].value = "Деньги: " + " | ".join(
+                f"{cur}: {amt:,.2f}" for cur, amt in acc.total_currencies.items()
+            )
+            ws["A3"].font = Font("Calibri", 10, italic=True)
+
+        hdrs = [
+            "№",
+            "Тикер",
+            "Название",
+            "Тип",
+            "Сектор",
+            "Страна",
+            "Валюта",
+            "Кол-во",
+            "Ср. цена\nпокупки",
+            "Текущая\nцена",
+            "Ср. стоимость\nпозиции",
+            "Рыночная\nстоимость",
+            "P&L",
+            "P&L, %",
+            "Доля от\nсчёта, %",
+            "Доля от\nкапитала, %",
+        ]
+        hr = 5
+        for c, h in enumerate(hdrs, 1):
+            ws.cell(hr, c, h)
+        self._style_header_row(ws, hr, len(hdrs))
+
+        for idx, p in enumerate(acc.positions, 1):
+            r = hr + idx
+            vals = [
+                idx,
+                p.ticker,
+                p.name,
+                self._type_ru(p.instrument_type),
+                p.sector,
+                p.country,
+                p.currency.upper() if p.currency else "",
+                float(p.quantity),
+                float(p.average_price),
+                float(p.current_price),
+                float(p.average_cost),
+                float(p.market_cost),
+                float(p.profit_loss),
+                float(p.profit_loss_pct),
+                float(p.share_of_account),
+                float(p.share_of_total),
+            ]
+            for c, v in enumerate(vals, 1):
+                cell = ws.cell(r, c, v)
+                cell.border = self.thin_border
+                cell.alignment = Alignment("center", "center")
+                cell.font = self.font_n
+                if c in (9, 10, 11, 12, 13):
+                    cell.number_format = "#,##0.00"
+                if c in (14, 15, 16):
+                    cell.number_format = "0.00"
+                if c == 13:
+                    cell.font = self._pnl_font(p.profit_loss)
+                if c == 14:
+                    cell.font = self._pnl_font(p.profit_loss_pct)
+
+            if idx % 2 == 0:
+                for c in range(1, len(hdrs) + 1):
+                    ws.cell(r, c).fill = self.alt_fill
+
+        # Итого
+        tr = hr + len(acc.positions) + 1
+        ws.cell(tr, 1, "ИТОГО").font = self.font_b
+        ws.cell(tr, 1).border = self.thin_border
+
+        t_avg = sum(p.average_cost for p in acc.positions)
+        t_mkt = sum(p.market_cost for p in acc.positions)
+        t_pnl = t_mkt - t_avg
+        t_pnl_pct = (t_pnl / t_avg * 100) if t_avg else Decimal(0)
+        t_sh_a = sum(p.share_of_account for p in acc.positions)
+        t_sh_c = sum(p.share_of_total for p in acc.positions)
+
+        for c, v in {
+            11: t_avg,
+            12: t_mkt,
+            13: t_pnl,
+            14: t_pnl_pct,
+            15: t_sh_a,
+            16: t_sh_c,
+        }.items():
+            cell = ws.cell(tr, c, float(v))
+            cell.font = self.font_b if c != 13 else self._pnl_font(v, bold=True)
+            cell.border = self.thin_border
+            cell.alignment = Alignment("center")
+            cell.number_format = "#,##0.00" if c in (11, 12, 13) else "0.00"
+
+        ws.freeze_panes = f"A{hr + 1}"
+        self._auto_width(ws)
+
+    @staticmethod
+    def _type_ru(t: str) -> str:
+        return {
+            "share": "Акция",
+            "bond": "Облигация",
+            "etf": "Фонд (ETF)",
+            "currency": "Валюта",
+            "futures": "Фьючерс",
+            "option": "Опцион",
+            "sp": "Структ. продукт",
+        }.get(t, t)

@@ -1,5 +1,6 @@
 """GUI на CustomTkinter."""
 
+import math
 import os
 import threading
 from decimal import Decimal
@@ -7,12 +8,111 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from api_client import AccountInfo, AggregatedPosition, TinkoffApiClient
+from api_client import (
+    AccountInfo,
+    AggregatedPosition,
+    TinkoffApiClient,
+    TypeAllocation,
+)
 from config import EXCEL_FILENAME, TOKEN
 from excel_export import ExcelExporter
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+
+
+class PieChart(ctk.CTkCanvas):
+    """Круговая диаграмма на Canvas."""
+
+    def __init__(self, master, size=320, **kwargs):
+        super().__init__(
+            master,
+            width=size,
+            height=size,
+            bg="#2b2b2b",
+            highlightthickness=0,
+            **kwargs,
+        )
+        self.size = size
+        self.segments: list[tuple[float, str, str]] = []  # (share%, color, label)
+
+    def set_data(self, segments: list[tuple[float, str, str]]):
+        """segments = [(share_pct, hex_color, label), ...]"""
+        self.segments = segments
+        self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        if not self.segments:
+            return
+
+        cx = self.size / 2
+        cy = self.size / 2
+        radius = self.size / 2 - 20
+        inner_radius = radius * 0.55  # donut
+
+        start_angle = 90  # начинаем сверху
+
+        for share_pct, color, label in self.segments:
+            extent = share_pct / 100 * 360
+            if extent < 0.5:
+                start_angle -= extent
+                continue
+
+            # Внешний сегмент
+            self.create_arc(
+                cx - radius,
+                cy - radius,
+                cx + radius,
+                cy + radius,
+                start=start_angle,
+                extent=-extent,
+                fill=color,
+                outline="#2b2b2b",
+                width=2,
+            )
+
+            # Метка процента на сегменте
+            if share_pct >= 4:
+                mid_angle = math.radians(start_angle - extent / 2)
+                label_r = (radius + inner_radius) / 2
+                lx = cx + label_r * math.cos(mid_angle)
+                ly = cy - label_r * math.sin(mid_angle)
+                self.create_text(
+                    lx,
+                    ly,
+                    text=f"{share_pct:.1f}%",
+                    fill="white",
+                    font=("Calibri", 10, "bold"),
+                )
+
+            start_angle -= extent
+
+        # Внутренний круг (donut hole)
+        self.create_oval(
+            cx - inner_radius,
+            cy - inner_radius,
+            cx + inner_radius,
+            cy + inner_radius,
+            fill="#2b2b2b",
+            outline="#2b2b2b",
+        )
+
+        # Текст в центре
+        self.create_text(
+            cx,
+            cy - 8,
+            text="Распределение",
+            fill="#ECF0F1",
+            font=("Calibri", 11, "bold"),
+        )
+        self.create_text(
+            cx,
+            cy + 12,
+            text="по типам",
+            fill="#BDC3C7",
+            font=("Calibri", 10),
+        )
 
 
 class PortfolioApp(ctk.CTk):
@@ -25,6 +125,7 @@ class PortfolioApp(ctk.CTk):
         self.client: TinkoffApiClient | None = None
         self.accounts: list[AccountInfo] = []
         self.aggregated: list[AggregatedPosition] = []
+        self.allocations: list[TypeAllocation] = []
         self.total_capital = Decimal("0")
 
         self._build()
@@ -158,18 +259,20 @@ class PortfolioApp(ctk.CTk):
             try:
                 accs, tot = self.client.get_all_accounts()
                 agg = TinkoffApiClient.aggregate_positions(accs, tot)
-                self.after(0, lambda: self._on_loaded(accs, tot, agg))
+                alloc = TinkoffApiClient.calc_type_allocation(accs, tot)
+                self.after(0, lambda: self._on_loaded(accs, tot, agg, alloc))
             except Exception as e:
                 err_msg = str(e)
                 self.after(0, lambda: self._on_load_err(err_msg))
 
         threading.Thread(target=job, daemon=True).start()
 
-    def _on_loaded(self, accs, total, aggregated):
+    def _on_loaded(self, accs, total, aggregated, allocations):
         self._set_busy(False)
         self.accounts = accs
         self.total_capital = total
         self.aggregated = aggregated
+        self.allocations = allocations
         self.lbl_capital.configure(text=f"💰 Общий капитал: {total:,.2f} ₽")
         n_pos = sum(len(a.positions) for a in accs)
         self.lbl_status.configure(
@@ -193,11 +296,15 @@ class PortfolioApp(ctk.CTk):
         t0 = self.tabs.add("📊 Сводка")
         self._fill_summary_tab(t0)
 
-        # 2) Все позиции
+        # 2) Распределение по типам
+        t_alloc = self.tabs.add("🎯 По типам")
+        self._fill_allocation_tab(t_alloc)
+
+        # 3) Все позиции
         t_all = self.tabs.add("📦 Все позиции")
         self._fill_aggregated_tab(t_all)
 
-        # 3) По счетам
+        # 4) По счетам
         for acc in self.accounts:
             tab = self.tabs.add(f"🏦 {acc.name}"[:30])
             self._fill_account_tab(tab, acc)
@@ -229,8 +336,132 @@ class PortfolioApp(ctk.CTk):
                 text_color="#BDC3C7",
             ).pack(anchor="w", padx=12, pady=(2, 8))
 
+    def _fill_allocation_tab(self, parent):
+        """Вкладка с круговой диаграммой и легендой."""
+        main_frame = ctk.CTkFrame(parent)
+        main_frame.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # Левая часть — диаграмма
+        left = ctk.CTkFrame(main_frame, width=380)
+        left.pack(side="left", fill="y", padx=(8, 4), pady=8)
+        left.pack_propagate(False)
+
+        ctk.CTkLabel(
+            left,
+            text="📊 Распределение по типам",
+            font=ctk.CTkFont(size=15, weight="bold"),
+        ).pack(pady=(12, 8))
+
+        chart = PieChart(left, size=320)
+        chart.pack(pady=8)
+
+        # Подготовка данных для диаграммы
+        segments = []
+        for alloc in self.allocations:
+            segments.append(
+                (
+                    float(alloc.share_of_total),
+                    alloc.color,
+                    alloc.type_name_ru,
+                )
+            )
+        chart.set_data(segments)
+
+        # Правая часть — легенда + таблица
+        right = ctk.CTkScrollableFrame(main_frame)
+        right.pack(side="left", fill="both", expand=True, padx=(4, 8), pady=8)
+
+        # Легенда
+        legend_frame = ctk.CTkFrame(right, corner_radius=8, fg_color="#1a1a2e")
+        legend_frame.pack(fill="x", padx=4, pady=(4, 12))
+
+        ctk.CTkLabel(
+            legend_frame,
+            text="Легенда",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(anchor="w", padx=12, pady=(10, 6))
+
+        for alloc in self.allocations:
+            row = ctk.CTkFrame(legend_frame, fg_color="transparent")
+            row.pack(fill="x", padx=12, pady=2)
+
+            # Цветной квадрат
+            color_box = ctk.CTkCanvas(
+                row,
+                width=16,
+                height=16,
+                bg="#1a1a2e",
+                highlightthickness=0,
+            )
+            color_box.pack(side="left", padx=(0, 8))
+            color_box.create_rectangle(2, 2, 14, 14, fill=alloc.color, outline="")
+
+            pnl_sign = "+" if alloc.profit_loss >= 0 else ""
+            pnl_color = "#27AE60" if alloc.profit_loss >= 0 else "#E74C3C"
+
+            ctk.CTkLabel(
+                row,
+                text=(
+                    f"{alloc.type_name_ru}  —  {alloc.share_of_total:.1f}%  "
+                    f"({alloc.total_market_cost:,.0f} ₽)"
+                ),
+                font=ctk.CTkFont(size=12),
+                text_color="#ECF0F1",
+            ).pack(side="left")
+
+        # Отступ
+        ctk.CTkLabel(legend_frame, text="").pack(pady=4)
+
+        # Детальная таблица
+        ctk.CTkLabel(
+            right,
+            text="📋 Детализация",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(anchor="w", padx=8, pady=(4, 6))
+
+        # Заголовок таблицы
+        hdr = ctk.CTkFrame(right, corner_radius=4, fg_color="#1F4E79")
+        hdr.pack(fill="x", padx=4, pady=(2, 0))
+
+        cols = [
+            ("Тип", 110),
+            ("Позиций", 60),
+            ("Стоимость", 110),
+            ("P&L", 100),
+            ("P&L %", 65),
+            ("Доля %", 60),
+        ]
+        for txt, w in cols:
+            ctk.CTkLabel(
+                hdr,
+                text=txt,
+                width=w,
+                font=ctk.CTkFont(size=11, weight="bold"),
+                text_color="white",
+            ).pack(side="left", padx=2, pady=4)
+
+        for i, alloc in enumerate(self.allocations):
+            bg = "#2C3E50" if i % 2 == 0 else "#34495E"
+            row = ctk.CTkFrame(right, corner_radius=3, fg_color=bg)
+            row.pack(fill="x", padx=4, pady=1)
+
+            pnl_c = "#27AE60" if alloc.profit_loss >= 0 else "#E74C3C"
+            s = "+" if alloc.profit_loss >= 0 else ""
+
+            data = [
+                (f"● {alloc.type_name_ru}", 110, alloc.color),
+                (f"{alloc.positions_count}", 60, "white"),
+                (f"{alloc.total_market_cost:,.0f} ₽", 110, "white"),
+                (f"{s}{alloc.profit_loss:,.0f} ₽", 100, pnl_c),
+                (f"{s}{alloc.profit_loss_pct:.1f}%", 65, pnl_c),
+                (f"{alloc.share_of_total:.1f}%", 60, "#3498DB"),
+            ]
+            for txt, w, clr in data:
+                ctk.CTkLabel(
+                    row, text=txt, width=w, font=ctk.CTkFont(size=11), text_color=clr
+                ).pack(side="left", padx=2, pady=4)
+
     def _fill_aggregated_tab(self, parent):
-        """Вкладка со всеми позициями, агрегированными по бумагам."""
         sf = ctk.CTkScrollableFrame(parent)
         sf.pack(fill="both", expand=True, padx=4, pady=4)
 
@@ -240,7 +471,6 @@ class PortfolioApp(ctk.CTk):
             )
             return
 
-        # Статистика сверху
         total_pnl = sum(p.profit_loss for p in self.aggregated)
         total_avg = sum(p.total_avg_cost for p in self.aggregated)
         total_pnl_pct = (total_pnl / total_avg * 100) if total_avg else Decimal(0)
@@ -261,7 +491,6 @@ class PortfolioApp(ctk.CTk):
             text_color=pnl_color,
         ).pack(padx=12, pady=10)
 
-        # Заголовок таблицы
         hdr = ctk.CTkFrame(sf, corner_radius=4, fg_color="#1F4E79")
         hdr.pack(fill="x", padx=2, pady=(2, 0))
 
@@ -287,7 +516,6 @@ class PortfolioApp(ctk.CTk):
                 text_color="white",
             ).pack(side="left", padx=2, pady=4)
 
-        # Строки
         type_ru = {
             "share": "Акция",
             "bond": "Облиг.",
@@ -334,7 +562,6 @@ class PortfolioApp(ctk.CTk):
             )
             return
 
-        # Заголовок
         hdr = ctk.CTkFrame(sf, corner_radius=4, fg_color="#1F4E79")
         hdr.pack(fill="x", padx=2, pady=(2, 0))
 
@@ -405,6 +632,7 @@ class PortfolioApp(ctk.CTk):
                     self.total_capital,
                     fp,
                     aggregated=self.aggregated,
+                    allocations=self.allocations,
                 )
                 self.after(0, lambda: self._on_exported(p))
             except Exception as e:

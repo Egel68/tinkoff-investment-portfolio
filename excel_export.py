@@ -3,10 +3,15 @@
 from decimal import Decimal
 
 from openpyxl import Workbook
+from openpyxl.chart import PieChart as XlPieChart
+from openpyxl.chart import Reference
+from openpyxl.chart.label import DataLabelList
+from openpyxl.chart.series import DataPoint
+from openpyxl.drawing.fill import ColorChoice, PatternFillProperties
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from api_client import AccountInfo, AggregatedPosition
+from api_client import AccountInfo, AggregatedPosition, TypeAllocation
 from config import COLORS
 
 
@@ -24,8 +29,6 @@ class ExcelExporter:
             top=Side("thin", color=COLORS["border"]),
             bottom=Side("thin", color=COLORS["border"]),
         )
-        self.font_pos = Font("Calibri", 10, color=COLORS["positive"])
-        self.font_neg = Font("Calibri", 10, color=COLORS["negative"])
         self.font_n = Font("Calibri", 10, color=COLORS["neutral"])
         self.font_b = Font("Calibri", 10, bold=True, color=COLORS["neutral"])
         self.font_title = Font("Calibri", 14, bold=True, color=COLORS["header_fill"])
@@ -67,18 +70,24 @@ class ExcelExporter:
         total_capital: Decimal,
         filepath: str,
         aggregated: list[AggregatedPosition] = None,
+        allocations: list[TypeAllocation] = None,
     ) -> str:
         """Главный метод — экспорт в Excel."""
-        # Сводка
+        # 1) Сводка
         ws0 = self.wb.create_sheet("Сводка")
         self._write_summary(ws0, accounts, total_capital)
 
-        # Все позиции (агрегированные)
+        # 2) По типам
+        if allocations:
+            ws_alloc = self.wb.create_sheet("По типам")
+            self._write_allocation(ws_alloc, allocations, total_capital)
+
+        # 3) Все позиции
         if aggregated:
             ws_all = self.wb.create_sheet("Все позиции")
             self._write_aggregated(ws_all, aggregated, total_capital)
 
-        # По каждому счёту
+        # 4) По счетам
         for i, acc in enumerate(accounts):
             safe = (
                 acc.name.replace("/", "-")
@@ -160,10 +169,134 @@ class ExcelExporter:
 
         self._auto_width(ws)
 
+    def _write_allocation(
+        self, ws, allocations: list[TypeAllocation], total_capital: Decimal
+    ):
+        """Лист с распределением по типам + круговая диаграмма."""
+        ws.merge_cells("A1:H1")
+        ws["A1"].value = "Распределение портфеля по типам инструментов"
+        ws["A1"].font = self.font_title
+        ws["A1"].alignment = Alignment("center")
+
+        ws.merge_cells("A2:H2")
+        ws["A2"].value = f"Общий капитал: {total_capital:,.2f} ₽"
+        ws["A2"].font = Font("Calibri", 12, bold=True, color=COLORS["positive"])
+        ws["A2"].alignment = Alignment("center")
+
+        hdrs = [
+            "Тип",
+            "Кол-во позиций",
+            "Ср. стоимость, ₽",
+            "Рыночная стоимость, ₽",
+            "P&L, ₽",
+            "P&L, %",
+            "Доля, %",
+        ]
+        hr = 4
+        for c, h in enumerate(hdrs, 1):
+            ws.cell(hr, c, h)
+        self._style_header_row(ws, hr, len(hdrs))
+
+        for idx, alloc in enumerate(allocations):
+            r = hr + idx + 1
+            vals = [
+                alloc.type_name_ru,
+                alloc.positions_count,
+                float(alloc.total_avg_cost),
+                float(alloc.total_market_cost),
+                float(alloc.profit_loss),
+                float(alloc.profit_loss_pct),
+                float(alloc.share_of_total),
+            ]
+            for c, v in enumerate(vals, 1):
+                cell = ws.cell(r, c, v)
+                cell.font = self.font_n
+                cell.border = self.thin_border
+                cell.alignment = Alignment("center")
+                if c in (3, 4, 5):
+                    cell.number_format = "#,##0.00"
+                if c in (6, 7):
+                    cell.number_format = "0.00"
+                if c == 5:
+                    cell.font = self._pnl_font(alloc.profit_loss)
+                if c == 6:
+                    cell.font = self._pnl_font(alloc.profit_loss_pct)
+
+            if idx % 2 == 0:
+                for c in range(1, len(hdrs) + 1):
+                    ws.cell(r, c).fill = self.alt_fill
+
+        # Итого
+        tr = hr + len(allocations) + 1
+        ws.cell(tr, 1, "ИТОГО").font = self.font_b
+        ws.cell(tr, 1).border = self.thin_border
+
+        t_cnt = sum(a.positions_count for a in allocations)
+        t_avg = sum(a.total_avg_cost for a in allocations)
+        t_mkt = sum(a.total_market_cost for a in allocations)
+        t_pnl = t_mkt - t_avg
+        t_pnl_pct = (t_pnl / t_avg * 100) if t_avg else Decimal(0)
+        t_share = sum(a.share_of_total for a in allocations)
+
+        for c, v in {
+            2: t_cnt,
+            3: float(t_avg),
+            4: float(t_mkt),
+            5: float(t_pnl),
+            6: float(t_pnl_pct),
+            7: float(t_share),
+        }.items():
+            cell = ws.cell(tr, c, v)
+            cell.font = (
+                self.font_b if c != 5 else self._pnl_font(Decimal(str(v)), bold=True)
+            )
+            cell.border = self.thin_border
+            cell.alignment = Alignment("center")
+            if c in (3, 4, 5):
+                cell.number_format = "#,##0.00"
+            if c in (6, 7):
+                cell.number_format = "0.00"
+
+        # === Круговая диаграмма ===
+        chart = XlPieChart()
+        chart.title = "Распределение по типам"
+        chart.style = 10
+        chart.width = 18
+        chart.height = 14
+
+        # Данные: типы (колонка 1) и доли (колонка 7)
+        data_start = hr + 1
+        data_end = hr + len(allocations)
+
+        labels = Reference(ws, min_col=1, min_row=data_start, max_row=data_end)
+        values = Reference(ws, min_col=7, min_row=data_start, max_row=data_end)
+
+        chart.add_data(values, titles_from_data=False)
+        chart.set_categories(labels)
+
+        # Подписи
+        chart.dataLabels = DataLabelList()
+        chart.dataLabels.showPercent = True
+        chart.dataLabels.showCatName = True
+        chart.dataLabels.showVal = False
+
+        # Раскраска сегментов
+        if chart.series:
+            series = chart.series[0]
+            for i, alloc in enumerate(allocations):
+                pt = DataPoint(idx=i)
+                color_hex = alloc.color.lstrip("#")
+                pt.graphicalProperties.solidFill = color_hex
+                series.data_points.append(pt)
+
+        # Размещаем диаграмму справа от таблицы
+        ws.add_chart(chart, "I4")
+
+        self._auto_width(ws)
+
     def _write_aggregated(
         self, ws, aggregated: list[AggregatedPosition], total_capital: Decimal
     ):
-        """Лист со всеми позициями, агрегированными по FIGI."""
         ws.merge_cells("A1:N1")
         ws["A1"].value = "Все позиции — сводка по всем счетам"
         ws["A1"].font = self.font_title
@@ -239,7 +372,6 @@ class ExcelExporter:
                 for c in range(1, len(hdrs) + 1):
                     ws.cell(r, c).fill = self.alt_fill
 
-        # Итого
         tr = hr + len(aggregated) + 1
         ws.cell(tr, 1, "ИТОГО").font = self.font_b
         ws.cell(tr, 1).border = self.thin_border

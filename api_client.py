@@ -87,6 +87,21 @@ class AccountInfo:
     total_currencies: dict[str, Decimal] = field(default_factory=dict)
 
 
+@dataclass
+class TypeAllocation:
+    """Распределение по типу инструмента."""
+
+    instrument_type: str
+    type_name_ru: str
+    total_market_cost: Decimal
+    total_avg_cost: Decimal
+    profit_loss: Decimal
+    profit_loss_pct: Decimal
+    share_of_total: Decimal
+    positions_count: int
+    color: str  # цвет для диаграммы
+
+
 class TinkoffApiClient:
     """Обёртка над t_tech.invest SDK."""
 
@@ -421,4 +436,95 @@ class TinkoffApiClient:
             )
 
         result.sort(key=lambda p: p.total_market_cost, reverse=True)
+        return result
+
+    TYPE_COLORS = {
+        "share": "#3498DB",
+        "bond": "#2ECC71",
+        "etf": "#E67E22",
+        "currency": "#9B59B6",
+        "futures": "#E74C3C",
+        "option": "#1ABC9C",
+        "sp": "#F39C12",
+        "unknown": "#95A5A6",
+    }
+
+    TYPE_NAMES_RU = {
+        "share": "Акции",
+        "bond": "Облигации",
+        "etf": "Фонды (ETF)",
+        "currency": "Валюта",
+        "futures": "Фьючерсы",
+        "option": "Опционы",
+        "sp": "Структ. продукты",
+        "unknown": "Прочее",
+    }
+
+    @classmethod
+    def calc_type_allocation(
+        cls,
+        accounts: list[AccountInfo],
+        total_capital: Decimal,
+    ) -> list[TypeAllocation]:
+        """Распределение портфеля по типам инструментов."""
+        buckets: dict[str, dict] = {}
+
+        for acc in accounts:
+            for pos in acc.positions:
+                t = pos.instrument_type or "unknown"
+
+                if t not in buckets:
+                    buckets[t] = {
+                        "total_market_cost": Decimal("0"),
+                        "total_avg_cost": Decimal("0"),
+                        "count": 0,
+                    }
+
+                buckets[t]["total_market_cost"] += pos.market_cost
+                buckets[t]["total_avg_cost"] += pos.average_cost
+                buckets[t]["count"] += 1
+
+        result = []
+        # Предопределённый порядок цветов для нестандартных типов
+        extra_colors = [
+            "#D35400",
+            "#8E44AD",
+            "#16A085",
+            "#C0392B",
+            "#2980B9",
+            "#7F8C8D",
+        ]
+        extra_idx = 0
+
+        for t, data in buckets.items():
+            mkt = data["total_market_cost"]
+            avg = data["total_avg_cost"]
+            pnl = mkt - avg
+            pnl_pct = (pnl / avg * Decimal("100")) if avg != 0 else Decimal("0")
+            share = (
+                (mkt / total_capital * Decimal("100"))
+                if total_capital != 0
+                else Decimal("0")
+            )
+
+            color = cls.TYPE_COLORS.get(t)
+            if not color:
+                color = extra_colors[extra_idx % len(extra_colors)]
+                extra_idx += 1
+
+            result.append(
+                TypeAllocation(
+                    instrument_type=t,
+                    type_name_ru=cls.TYPE_NAMES_RU.get(t, t),
+                    total_market_cost=mkt,
+                    total_avg_cost=avg,
+                    profit_loss=pnl,
+                    profit_loss_pct=pnl_pct,
+                    share_of_total=share,
+                    positions_count=data["count"],
+                    color=color,
+                )
+            )
+
+        result.sort(key=lambda x: x.total_market_cost, reverse=True)
         return result

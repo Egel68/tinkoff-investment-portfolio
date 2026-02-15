@@ -18,9 +18,10 @@ def menu():
     print("\n  1. Проверить подключение")
     print("  2. Показать портфель (по счетам)")
     print("  3. Показать все позиции (агрегированные)")
-    print("  4. Экспортировать в Excel")
-    print("  5. Всё: портфель + все позиции + Excel")
-    print("  6. Сменить токен")
+    print("  4. Распределение по типам")
+    print("  5. Экспортировать в Excel")
+    print("  6. Всё: портфель + позиции + типы + Excel")
+    print("  7. Сменить токен")
     print("  0. Выход\n")
 
 
@@ -82,6 +83,30 @@ def show_aggregated(aggregated, total):
         )
 
 
+def show_allocation(allocations, total):
+    print(f"\n{'=' * 80}")
+    print(f"  🎯 Распределение по типам инструментов")
+    print(f"{'=' * 80}")
+
+    print(
+        f"\n  {'Тип':<20} {'Позиций':>8} {'Стоимость':>15} "
+        f"{'P&L':>12} {'P&L%':>8} {'Доля':>7}"
+    )
+    print(f"  {'─' * 75}")
+
+    for a in allocations:
+        s = "+" if a.profit_loss >= 0 else ""
+        bar_len = int(float(a.share_of_total) / 2)
+        bar = "█" * bar_len
+        print(
+            f"  {a.type_name_ru:<20} {a.positions_count:>8} "
+            f"{a.total_market_cost:>15,.2f} "
+            f"{s}{a.profit_loss:>11,.2f} "
+            f"{s}{a.profit_loss_pct:>7.2f}% "
+            f"{a.share_of_total:>6.1f}%  {bar}"
+        )
+
+
 def run_console():
     banner()
     token = TOKEN
@@ -118,29 +143,54 @@ def run_console():
                 print(f"  ❌ {e}")
 
         elif ch == "4":
-            print("⏳ Экспорт…")
+            print("⏳ Загрузка…")
             try:
                 accs, tot = client.get_all_accounts()
-                agg = TinkoffApiClient.aggregate_positions(accs, tot)
-                path = ExcelExporter().export(accs, tot, EXCEL_FILENAME, aggregated=agg)
-                print(f"  ✅ Сохранено: {path}")
+                alloc = TinkoffApiClient.calc_type_allocation(accs, tot)
+                show_allocation(alloc, tot)
             except Exception as e:
                 print(f"  ❌ {e}")
 
         elif ch == "5":
-            print("⏳ Загрузка…")
+            print("⏳ Экспорт…")
             try:
                 accs, tot = client.get_all_accounts()
                 agg = TinkoffApiClient.aggregate_positions(accs, tot)
-                show_portfolio(accs, tot)
-                print()
-                show_aggregated(agg, tot)
-                path = ExcelExporter().export(accs, tot, EXCEL_FILENAME, aggregated=agg)
-                print(f"\n  ✅ Excel: {path}")
+                alloc = TinkoffApiClient.calc_type_allocation(accs, tot)
+                path = ExcelExporter().export(
+                    accs,
+                    tot,
+                    EXCEL_FILENAME,
+                    aggregated=agg,
+                    allocations=alloc,
+                )
+                print(f"  ✅ Сохранено: {path}")
             except Exception as e:
                 print(f"  ❌ {e}")
 
         elif ch == "6":
+            print("⏳ Загрузка…")
+            try:
+                accs, tot = client.get_all_accounts()
+                agg = TinkoffApiClient.aggregate_positions(accs, tot)
+                alloc = TinkoffApiClient.calc_type_allocation(accs, tot)
+                show_portfolio(accs, tot)
+                print()
+                show_aggregated(agg, tot)
+                print()
+                show_allocation(alloc, tot)
+                path = ExcelExporter().export(
+                    accs,
+                    tot,
+                    EXCEL_FILENAME,
+                    aggregated=agg,
+                    allocations=alloc,
+                )
+                print(f"\n  ✅ Excel: {path}")
+            except Exception as e:
+                print(f"  ❌ {e}")
+
+        elif ch == "7":
             token = getpass("Новый токен: ").strip()
             client = TinkoffApiClient(token)
             print("  ✅ Обновлён")

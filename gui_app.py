@@ -22,7 +22,7 @@ ctk.set_default_color_theme("blue")
 
 
 class PieChart(ctk.CTkCanvas):
-    """Круговая диаграмма на Canvas."""
+    """Круговая donut-диаграмма."""
 
     def __init__(self, master, size=320, **kwargs):
         super().__init__(
@@ -34,10 +34,9 @@ class PieChart(ctk.CTkCanvas):
             **kwargs,
         )
         self.size = size
-        self.segments: list[tuple[float, str, str]] = []  # (share%, color, label)
+        self.segments: list[tuple[float, str, str]] = []
 
     def set_data(self, segments: list[tuple[float, str, str]]):
-        """segments = [(share_pct, hex_color, label), ...]"""
         self.segments = segments
         self._draw()
 
@@ -49,17 +48,16 @@ class PieChart(ctk.CTkCanvas):
         cx = self.size / 2
         cy = self.size / 2
         radius = self.size / 2 - 20
-        inner_radius = radius * 0.55  # donut
+        inner_radius = radius * 0.55
 
-        start_angle = 90  # начинаем сверху
+        start_angle = 90
 
         for share_pct, color, label in self.segments:
             extent = share_pct / 100 * 360
-            if extent < 0.5:
+            if extent < 0.3:
                 start_angle -= extent
                 continue
 
-            # Внешний сегмент
             self.create_arc(
                 cx - radius,
                 cy - radius,
@@ -72,8 +70,7 @@ class PieChart(ctk.CTkCanvas):
                 width=2,
             )
 
-            # Метка процента на сегменте
-            if share_pct >= 4:
+            if share_pct >= 3:
                 mid_angle = math.radians(start_angle - extent / 2)
                 label_r = (radius + inner_radius) / 2
                 lx = cx + label_r * math.cos(mid_angle)
@@ -88,7 +85,6 @@ class PieChart(ctk.CTkCanvas):
 
             start_angle -= extent
 
-        # Внутренний круг (donut hole)
         self.create_oval(
             cx - inner_radius,
             cy - inner_radius,
@@ -98,7 +94,6 @@ class PieChart(ctk.CTkCanvas):
             outline="#2b2b2b",
         )
 
-        # Текст в центре
         self.create_text(
             cx,
             cy - 8,
@@ -133,7 +128,6 @@ class PortfolioApp(ctk.CTk):
             self.token_entry.insert(0, TOKEN)
 
     def _build(self):
-        # === Токен ===
         top = ctk.CTkFrame(self, corner_radius=10)
         top.pack(fill="x", padx=12, pady=(12, 4))
 
@@ -161,7 +155,6 @@ class PortfolioApp(ctk.CTk):
         )
         self.btn_connect.pack(side="right", padx=12, pady=8)
 
-        # === Панель действий ===
         act = ctk.CTkFrame(self, corner_radius=10)
         act.pack(fill="x", padx=12, pady=4)
 
@@ -186,7 +179,6 @@ class PortfolioApp(ctk.CTk):
         )
         self.btn_refresh.pack(side="right", padx=4, pady=8)
 
-        # === Капитал ===
         cap = ctk.CTkFrame(self, corner_radius=10)
         cap.pack(fill="x", padx=12, pady=4)
         self.lbl_capital = ctk.CTkLabel(
@@ -194,7 +186,6 @@ class PortfolioApp(ctk.CTk):
         )
         self.lbl_capital.pack(pady=8)
 
-        # === Табы ===
         self.tabs = ctk.CTkTabview(self, corner_radius=10)
         self.tabs.pack(fill="both", expand=True, padx=12, pady=(4, 12))
         self.tabs.add("Обзор")
@@ -202,7 +193,6 @@ class PortfolioApp(ctk.CTk):
             self.tabs.tab("Обзор"), text="Подключитесь к API", font=ctk.CTkFont(size=14)
         ).pack(expand=True)
 
-        # === Прогресс ===
         self.progress = ctk.CTkProgressBar(self, mode="indeterminate")
 
     def _toggle_show(self):
@@ -223,8 +213,6 @@ class PortfolioApp(ctk.CTk):
             if self.client:
                 self.btn_refresh.configure(state="normal")
                 self.btn_export.configure(state="normal")
-
-    # === Подключение ===
 
     def _connect(self):
         token = self.token_entry.get().strip()
@@ -249,8 +237,6 @@ class PortfolioApp(ctk.CTk):
         else:
             self.lbl_status.configure(text=f"❌ {msg}", text_color="#E74C3C")
             messagebox.showerror("Ошибка", msg)
-
-    # === Загрузка ===
 
     def _load(self):
         self._set_busy(True, "⏳ Загрузка портфеля…")
@@ -286,25 +272,19 @@ class PortfolioApp(ctk.CTk):
         self.lbl_status.configure(text=f"❌ {err}", text_color="#E74C3C")
         messagebox.showerror("Ошибка", err)
 
-    # === Вкладки ===
-
     def _fill_tabs(self):
         for name in list(self.tabs._tab_dict.keys()):
             self.tabs.delete(name)
 
-        # 1) Сводка
         t0 = self.tabs.add("📊 Сводка")
         self._fill_summary_tab(t0)
 
-        # 2) Распределение по типам
         t_alloc = self.tabs.add("🎯 По типам")
         self._fill_allocation_tab(t_alloc)
 
-        # 3) Все позиции
         t_all = self.tabs.add("📦 Все позиции")
         self._fill_aggregated_tab(t_all)
 
-        # 4) По счетам
         for acc in self.accounts:
             tab = self.tabs.add(f"🏦 {acc.name}"[:30])
             self._fill_account_tab(tab, acc)
@@ -337,9 +317,16 @@ class PortfolioApp(ctk.CTk):
             ).pack(anchor="w", padx=12, pady=(2, 8))
 
     def _fill_allocation_tab(self, parent):
-        """Вкладка с круговой диаграммой и легендой."""
+        """Вкладка: диаграмма + легенда + таблица, деньги отдельно."""
         main_frame = ctk.CTkFrame(parent)
         main_frame.pack(fill="both", expand=True, padx=4, pady=4)
+
+        # --- Разделяем на ценные бумаги и деньги ---
+        securities = [a for a in self.allocations if a.instrument_type != "cash"]
+        cash_items = [a for a in self.allocations if a.instrument_type == "cash"]
+
+        total_securities = sum(a.total_market_cost for a in securities)
+        total_cash = sum(a.total_market_cost for a in cash_items)
 
         # Левая часть — диаграмма
         left = ctk.CTkFrame(main_frame, width=380)
@@ -350,12 +337,28 @@ class PortfolioApp(ctk.CTk):
             left,
             text="📊 Распределение по типам",
             font=ctk.CTkFont(size=15, weight="bold"),
-        ).pack(pady=(12, 8))
+        ).pack(pady=(12, 4))
+
+        # Подпись: ценные бумаги vs деньги
+        sec_pct = (
+            float(total_securities / self.total_capital * 100)
+            if self.total_capital
+            else 0
+        )
+        cash_pct = (
+            float(total_cash / self.total_capital * 100) if self.total_capital else 0
+        )
+        ctk.CTkLabel(
+            left,
+            text=f"📈 Бумаги: {sec_pct:.1f}%  ·  💵 Деньги: {cash_pct:.1f}%",
+            font=ctk.CTkFont(size=12),
+            text_color="#BDC3C7",
+        ).pack(pady=(0, 8))
 
         chart = PieChart(left, size=320)
         chart.pack(pady=8)
 
-        # Подготовка данных для диаграммы
+        # Данные для диаграммы — все типы включая cash
         segments = []
         for alloc in self.allocations:
             segments.append(
@@ -367,67 +370,131 @@ class PortfolioApp(ctk.CTk):
             )
         chart.set_data(segments)
 
-        # Правая часть — легенда + таблица
-        right = ctk.CTkScrollableFrame(main_frame)
-        right.pack(side="left", fill="both", expand=True, padx=(4, 8), pady=8)
-
-        # Легенда
-        legend_frame = ctk.CTkFrame(right, corner_radius=8, fg_color="#1a1a2e")
-        legend_frame.pack(fill="x", padx=4, pady=(4, 12))
-
-        ctk.CTkLabel(
-            legend_frame,
-            text="Легенда",
-            font=ctk.CTkFont(size=13, weight="bold"),
-        ).pack(anchor="w", padx=12, pady=(10, 6))
+        # Легенда под диаграммой
+        legend_frame = ctk.CTkFrame(left, corner_radius=8, fg_color="#1a1a2e")
+        legend_frame.pack(fill="x", padx=8, pady=(4, 8))
 
         for alloc in self.allocations:
             row = ctk.CTkFrame(legend_frame, fg_color="transparent")
-            row.pack(fill="x", padx=12, pady=2)
+            row.pack(fill="x", padx=8, pady=1)
 
-            # Цветной квадрат
             color_box = ctk.CTkCanvas(
                 row,
-                width=16,
-                height=16,
+                width=14,
+                height=14,
                 bg="#1a1a2e",
                 highlightthickness=0,
             )
-            color_box.pack(side="left", padx=(0, 8))
-            color_box.create_rectangle(2, 2, 14, 14, fill=alloc.color, outline="")
+            color_box.pack(side="left", padx=(0, 6))
+            color_box.create_rectangle(1, 1, 13, 13, fill=alloc.color, outline="")
 
-            pnl_sign = "+" if alloc.profit_loss >= 0 else ""
-            pnl_color = "#27AE60" if alloc.profit_loss >= 0 else "#E74C3C"
+            # Иконка для денег
+            icon = "💵" if alloc.instrument_type == "cash" else "📄"
 
             ctk.CTkLabel(
                 row,
-                text=(
-                    f"{alloc.type_name_ru}  —  {alloc.share_of_total:.1f}%  "
-                    f"({alloc.total_market_cost:,.0f} ₽)"
-                ),
-                font=ctk.CTkFont(size=12),
-                text_color="#ECF0F1",
+                text=f"{icon} {alloc.type_name_ru} — {alloc.share_of_total:.1f}%",
+                font=ctk.CTkFont(size=11),
+                text_color="#ECF0F1" if alloc.instrument_type != "cash" else "#F39C12",
             ).pack(side="left")
 
-        # Отступ
-        ctk.CTkLabel(legend_frame, text="").pack(pady=4)
+        # Правая часть — детальная таблица
+        right = ctk.CTkScrollableFrame(main_frame)
+        right.pack(side="left", fill="both", expand=True, padx=(4, 8), pady=8)
 
-        # Детальная таблица
+        # --- Секция: Ценные бумаги ---
         ctk.CTkLabel(
             right,
-            text="📋 Детализация",
-            font=ctk.CTkFont(size=13, weight="bold"),
-        ).pack(anchor="w", padx=8, pady=(4, 6))
+            text="📈 Ценные бумаги",
+            font=ctk.CTkFont(size=14, weight="bold"),
+        ).pack(anchor="w", padx=8, pady=(8, 4))
 
-        # Заголовок таблицы
-        hdr = ctk.CTkFrame(right, corner_radius=4, fg_color="#1F4E79")
+        self._draw_allocation_table(right, securities)
+
+        # --- Секция: Денежные средства ---
+        if cash_items:
+            sep = ctk.CTkFrame(right, height=2, fg_color="#555555")
+            sep.pack(fill="x", padx=8, pady=12)
+
+            ctk.CTkLabel(
+                right,
+                text="💵 Денежные средства",
+                font=ctk.CTkFont(size=14, weight="bold"),
+                text_color="#F39C12",
+            ).pack(anchor="w", padx=8, pady=(0, 4))
+
+            # Детали по деньгам
+            cash_detail = ctk.CTkFrame(right, corner_radius=8, fg_color="#1a1a2e")
+            cash_detail.pack(fill="x", padx=4, pady=(0, 8))
+
+            total_cash_val = sum(a.total_market_cost for a in cash_items)
+            cash_share = (
+                float(total_cash_val / self.total_capital * 100)
+                if self.total_capital
+                else 0
+            )
+
+            ctk.CTkLabel(
+                cash_detail,
+                text=f"Всего денежных средств: {total_cash_val:,.2f} ₽  ({cash_share:.1f}% от капитала)",
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color="#F39C12",
+            ).pack(padx=12, pady=(10, 4))
+
+            # Разбивка по валютам (из total_currencies всех счетов)
+            all_currencies: dict[str, Decimal] = {}
+            for acc in self.accounts:
+                for cur, amt in acc.total_currencies.items():
+                    all_currencies[cur] = all_currencies.get(cur, Decimal("0")) + amt
+
+            if all_currencies:
+                for cur, amt in sorted(all_currencies.items(), key=lambda x: -x[1]):
+                    ctk.CTkLabel(
+                        cash_detail,
+                        text=f"  {cur}: {amt:,.2f}",
+                        font=ctk.CTkFont(size=11),
+                        text_color="#BDC3C7",
+                    ).pack(anchor="w", padx=20, pady=1)
+
+            ctk.CTkLabel(cash_detail, text="").pack(pady=2)
+
+            self._draw_allocation_table(right, cash_items)
+
+        # --- Итого ---
+        sep2 = ctk.CTkFrame(right, height=2, fg_color="#555555")
+        sep2.pack(fill="x", padx=8, pady=12)
+
+        total_mkt = sum(a.total_market_cost for a in self.allocations)
+        total_pnl = sum(a.profit_loss for a in self.allocations)
+        pnl_sign = "+" if total_pnl >= 0 else ""
+        pnl_color = "#27AE60" if total_pnl >= 0 else "#E74C3C"
+
+        totals_frame = ctk.CTkFrame(right, corner_radius=8, fg_color="#1a1a2e")
+        totals_frame.pack(fill="x", padx=4, pady=4)
+
+        ctk.CTkLabel(
+            totals_frame,
+            text=(
+                f"📊 ИТОГО:  Стоимость: {total_mkt:,.2f} ₽  |  "
+                f"P&L: {pnl_sign}{total_pnl:,.2f} ₽"
+            ),
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=pnl_color,
+        ).pack(padx=12, pady=10)
+
+    def _draw_allocation_table(self, parent, items: list[TypeAllocation]):
+        """Рисуем таблицу распределения для группы типов."""
+        if not items:
+            return
+
+        hdr = ctk.CTkFrame(parent, corner_radius=4, fg_color="#1F4E79")
         hdr.pack(fill="x", padx=4, pady=(2, 0))
 
         cols = [
-            ("Тип", 110),
+            ("Тип", 130),
             ("Позиций", 60),
-            ("Стоимость", 110),
-            ("P&L", 100),
+            ("Стоимость", 120),
+            ("P&L", 110),
             ("P&L %", 65),
             ("Доля %", 60),
         ]
@@ -440,19 +507,19 @@ class PortfolioApp(ctk.CTk):
                 text_color="white",
             ).pack(side="left", padx=2, pady=4)
 
-        for i, alloc in enumerate(self.allocations):
+        for i, alloc in enumerate(items):
             bg = "#2C3E50" if i % 2 == 0 else "#34495E"
-            row = ctk.CTkFrame(right, corner_radius=3, fg_color=bg)
+            row = ctk.CTkFrame(parent, corner_radius=3, fg_color=bg)
             row.pack(fill="x", padx=4, pady=1)
 
             pnl_c = "#27AE60" if alloc.profit_loss >= 0 else "#E74C3C"
             s = "+" if alloc.profit_loss >= 0 else ""
 
             data = [
-                (f"● {alloc.type_name_ru}", 110, alloc.color),
+                (f"● {alloc.type_name_ru}", 130, alloc.color),
                 (f"{alloc.positions_count}", 60, "white"),
-                (f"{alloc.total_market_cost:,.0f} ₽", 110, "white"),
-                (f"{s}{alloc.profit_loss:,.0f} ₽", 100, pnl_c),
+                (f"{alloc.total_market_cost:,.0f} ₽", 120, "white"),
+                (f"{s}{alloc.profit_loss:,.0f} ₽", 110, pnl_c),
                 (f"{s}{alloc.profit_loss_pct:.1f}%", 65, pnl_c),
                 (f"{alloc.share_of_total:.1f}%", 60, "#3498DB"),
             ]
@@ -534,10 +601,15 @@ class PortfolioApp(ctk.CTk):
             s = "+" if p.profit_loss >= 0 else ""
             accounts_str = ", ".join(p.accounts)
 
+            # Помечаем деньги
+            name_display = p.name[:20]
+            if p.is_cash:
+                name_display = f"💵 {name_display}"
+
             data = [
                 (f"{i + 1}", 35, "#8899AA"),
                 (p.ticker, 80, "white"),
-                (p.name[:20], 160, "#ECF0F1"),
+                (name_display, 160, "#F39C12" if p.is_cash else "#ECF0F1"),
                 (type_ru.get(p.instrument_type, p.instrument_type), 70, "#BDC3C7"),
                 (f"{p.total_quantity:.0f}", 65, "white"),
                 (f"{p.weighted_avg_price:,.2f}", 90, "white"),
@@ -593,9 +665,13 @@ class PortfolioApp(ctk.CTk):
             pnl_c = "#27AE60" if p.profit_loss >= 0 else "#E74C3C"
             s = "+" if p.profit_loss >= 0 else ""
 
+            name_display = p.name[:20]
+            if p.is_cash:
+                name_display = f"💵 {name_display}"
+
             data = [
                 (p.ticker, 80, "white"),
-                (p.name[:20], 170, "#ECF0F1"),
+                (name_display, 170, "#F39C12" if p.is_cash else "#ECF0F1"),
                 (f"{p.quantity:.0f}", 65, "white"),
                 (f"{p.average_price:,.2f}", 95, "white"),
                 (f"{p.current_price:,.2f}", 95, "white"),
@@ -608,8 +684,6 @@ class PortfolioApp(ctk.CTk):
                 ctk.CTkLabel(
                     row, text=txt, width=w, font=ctk.CTkFont(size=11), text_color=clr
                 ).pack(side="left", padx=2, pady=3)
-
-    # === Excel ===
 
     def _export(self):
         if not self.accounts:

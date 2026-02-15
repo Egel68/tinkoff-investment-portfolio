@@ -17,7 +17,6 @@ from t_tech.invest.schemas import (
 
 
 def quotation_to_decimal(q) -> Decimal:
-    """Quotation / MoneyValue -> Decimal."""
     if q is None:
         return Decimal("0")
     units = getattr(q, "units", 0) or 0
@@ -27,8 +26,6 @@ def quotation_to_decimal(q) -> Decimal:
 
 @dataclass
 class PositionInfo:
-    """Одна позиция в портфеле."""
-
     figi: str
     name: str
     ticker: str
@@ -49,12 +46,11 @@ class PositionInfo:
     sector: str = ""
     country: str = ""
     exchange: str = ""
+    is_cash: bool = False  # флаг: это денежная позиция, а не бумага
 
 
 @dataclass
 class AggregatedPosition:
-    """Агрегированная позиция по всем счетам."""
-
     figi: str
     name: str
     ticker: str
@@ -63,20 +59,32 @@ class AggregatedPosition:
     sector: str
     country: str
     total_quantity: Decimal
-    total_avg_cost: Decimal  # сумма средних стоимостей
-    total_market_cost: Decimal  # сумма рыночных стоимостей
-    weighted_avg_price: Decimal  # средневзвешенная цена покупки
+    total_avg_cost: Decimal
+    total_market_cost: Decimal
+    weighted_avg_price: Decimal
     current_price: Decimal
     profit_loss: Decimal
     profit_loss_pct: Decimal
-    share_of_total: Decimal  # доля от всего капитала
-    accounts: list[str] = field(default_factory=list)  # на каких счетах есть
+    share_of_total: Decimal
+    accounts: list[str] = field(default_factory=list)
+    is_cash: bool = False
+
+
+@dataclass
+class TypeAllocation:
+    instrument_type: str
+    type_name_ru: str
+    total_market_cost: Decimal
+    total_avg_cost: Decimal
+    profit_loss: Decimal
+    profit_loss_pct: Decimal
+    share_of_total: Decimal
+    positions_count: int
+    color: str
 
 
 @dataclass
 class AccountInfo:
-    """Один брокерский счёт."""
-
     account_id: str
     name: str
     acc_type: str
@@ -87,24 +95,7 @@ class AccountInfo:
     total_currencies: dict[str, Decimal] = field(default_factory=dict)
 
 
-@dataclass
-class TypeAllocation:
-    """Распределение по типу инструмента."""
-
-    instrument_type: str
-    type_name_ru: str
-    total_market_cost: Decimal
-    total_avg_cost: Decimal
-    profit_loss: Decimal
-    profit_loss_pct: Decimal
-    share_of_total: Decimal
-    positions_count: int
-    color: str  # цвет для диаграммы
-
-
 class TinkoffApiClient:
-    """Обёртка над t_tech.invest SDK."""
-
     ACCOUNT_TYPE_MAP = {
         0: "Не определён",
         1: "Брокерский",
@@ -118,6 +109,53 @@ class TinkoffApiClient:
         1: "Новый",
         2: "Открыт",
         3: "Закрыт",
+    }
+
+    TYPE_COLORS = {
+        "share": "#3498DB",
+        "bond": "#2ECC71",
+        "etf": "#E67E22",
+        "currency": "#9B59B6",
+        "futures": "#E74C3C",
+        "option": "#1ABC9C",
+        "sp": "#F39C12",
+        "cash": "#7F8C8D",  # денежные средства
+        "unknown": "#95A5A6",
+    }
+
+    TYPE_NAMES_RU = {
+        "share": "Акции",
+        "bond": "Облигации",
+        "etf": "Фонды (ETF)",
+        "currency": "Валютные инструменты",
+        "futures": "Фьючерсы",
+        "option": "Опционы",
+        "sp": "Структ. продукты",
+        "cash": "Денежные средства",
+        "unknown": "Прочее",
+    }
+
+    # Тикеры/FIGI, которые являются денежными позициями
+    CASH_TICKERS = {
+        "RUB000UTSTOM",  # рубли
+        "RUBRUB",
+        "USD000UTSTOM",  # доллары
+        "EUR_RUB__TOM",  # евро
+        "CNYRUB_TOM",  # юани
+        "HKDRUB_TOM",  # гонконгский доллар
+        "TRYRUB_TOM",  # лира
+    }
+
+    CASH_NAMES = {
+        "rub",
+        "usd",
+        "eur",
+        "cny",
+        "hkd",
+        "try",
+        "gbp",
+        "chf",
+        "jpy",
     }
 
     def __init__(self, token: str):
@@ -212,6 +250,46 @@ class TinkoffApiClient:
 
         self._instr_cache[figi] = info
         return info
+
+    def _is_cash_position(self, ticker: str, name: str, instrument_type: str) -> bool:
+        """Определяем, является ли позиция денежными средствами."""
+        # По тикеру
+        if ticker in self.CASH_TICKERS:
+            return True
+
+        # По типу currency + короткое имя (RUB, USD и т.д.)
+        if instrument_type == "currency":
+            name_lower = name.lower().strip()
+            ticker_lower = ticker.lower().strip()
+
+            # Если имя или тикер — это просто код валюты
+            if name_lower in self.CASH_NAMES or ticker_lower in self.CASH_NAMES:
+                return True
+
+            # Если тикер содержит типичные паттерны денежных позиций
+            for cash_t in self.CASH_TICKERS:
+                if cash_t in ticker:
+                    return True
+
+            # Если название содержит "Российский рубль", "Доллар" и т.д.
+            cash_keywords = [
+                "рубль",
+                "рубли",
+                "доллар",
+                "евро",
+                "юань",
+                "гонконг",
+                "лира",
+                "фунт",
+                "франк",
+                "иена",
+                "рос. рубль",
+            ]
+            for kw in cash_keywords:
+                if kw in name_lower:
+                    return True
+
+        return False
 
     def get_all_accounts(self) -> tuple[list[AccountInfo], Decimal]:
         accounts_out: list[AccountInfo] = []
@@ -317,6 +395,11 @@ class TinkoffApiClient:
                         else Decimal("0")
                     )
 
+                    # Определяем, это деньги или бумага
+                    is_cash = self._is_cash_position(
+                        instr["ticker"], instr["name"], instr["instrument_type"]
+                    )
+
                     position = PositionInfo(
                         figi=figi,
                         name=instr["name"],
@@ -338,9 +421,11 @@ class TinkoffApiClient:
                         sector=instr["sector"],
                         country=instr["country"],
                         exchange=instr["exchange"],
+                        is_cash=is_cash,
                     )
                     acc_info.positions.append(position)
 
+                # Денежные остатки
                 try:
                     pos_resp = cl.operations.get_positions(account_id=acc.id)
                     for m in pos_resp.money:
@@ -358,10 +443,6 @@ class TinkoffApiClient:
     def aggregate_positions(
         accounts: list[AccountInfo], total_capital: Decimal
     ) -> list[AggregatedPosition]:
-        """
-        Агрегация одинаковых бумаг со всех счетов.
-        Группировка по FIGI (или ticker+name если figi пустой).
-        """
         aggregated: dict[str, dict] = {}
 
         for acc in accounts:
@@ -382,13 +463,14 @@ class TinkoffApiClient:
                         "total_avg_cost": Decimal("0"),
                         "total_market_cost": Decimal("0"),
                         "accounts": [],
+                        "is_cash": pos.is_cash,
                     }
 
                 agg = aggregated[key]
                 agg["total_quantity"] += pos.quantity
                 agg["total_avg_cost"] += pos.average_cost
                 agg["total_market_cost"] += pos.market_cost
-                agg["current_price"] = pos.current_price  # обновляем до последней
+                agg["current_price"] = pos.current_price
 
                 if acc.name not in agg["accounts"]:
                     agg["accounts"].append(acc.name)
@@ -432,33 +514,12 @@ class TinkoffApiClient:
                     profit_loss_pct=pnl_pct,
                     share_of_total=share,
                     accounts=agg["accounts"],
+                    is_cash=agg["is_cash"],
                 )
             )
 
         result.sort(key=lambda p: p.total_market_cost, reverse=True)
         return result
-
-    TYPE_COLORS = {
-        "share": "#3498DB",
-        "bond": "#2ECC71",
-        "etf": "#E67E22",
-        "currency": "#9B59B6",
-        "futures": "#E74C3C",
-        "option": "#1ABC9C",
-        "sp": "#F39C12",
-        "unknown": "#95A5A6",
-    }
-
-    TYPE_NAMES_RU = {
-        "share": "Акции",
-        "bond": "Облигации",
-        "etf": "Фонды (ETF)",
-        "currency": "Валюта",
-        "futures": "Фьючерсы",
-        "option": "Опционы",
-        "sp": "Структ. продукты",
-        "unknown": "Прочее",
-    }
 
     @classmethod
     def calc_type_allocation(
@@ -466,12 +527,16 @@ class TinkoffApiClient:
         accounts: list[AccountInfo],
         total_capital: Decimal,
     ) -> list[TypeAllocation]:
-        """Распределение портфеля по типам инструментов."""
+        """Распределение по типам. Денежные позиции выделены в отдельную категорию."""
         buckets: dict[str, dict] = {}
 
         for acc in accounts:
             for pos in acc.positions:
-                t = pos.instrument_type or "unknown"
+                # Если это деньги — в категорию "cash"
+                if pos.is_cash:
+                    t = "cash"
+                else:
+                    t = pos.instrument_type or "unknown"
 
                 if t not in buckets:
                     buckets[t] = {
@@ -484,16 +549,13 @@ class TinkoffApiClient:
                 buckets[t]["total_avg_cost"] += pos.average_cost
                 buckets[t]["count"] += 1
 
+        # Также добавляем денежные остатки со счетов,
+        # которые НЕ отражены как позиции портфеля
+        # (иногда деньги есть в total_currencies, но не в positions)
+        # Чтобы не задвоить, просто проверим — если cash уже есть, оставим как есть
+
         result = []
-        # Предопределённый порядок цветов для нестандартных типов
-        extra_colors = [
-            "#D35400",
-            "#8E44AD",
-            "#16A085",
-            "#C0392B",
-            "#2980B9",
-            "#7F8C8D",
-        ]
+        extra_colors = ["#D35400", "#8E44AD", "#16A085", "#C0392B", "#2980B9"]
         extra_idx = 0
 
         for t, data in buckets.items():
@@ -526,5 +588,6 @@ class TinkoffApiClient:
                 )
             )
 
-        result.sort(key=lambda x: x.total_market_cost, reverse=True)
+        # Сортировка: деньги в конец, остальное по убыванию стоимости
+        result.sort(key=lambda x: (x.instrument_type == "cash", -x.total_market_cost))
         return result

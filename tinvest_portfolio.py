@@ -9,7 +9,7 @@
 
 Использование:
 1. Получите токен доступа на https://www.tbank.ru/invest/settings/
-2. Установите переменную окружения TINKOFF_INVEST_TOKEN или передайте токен при запуске
+2. Установите переменную окружения TINVEST_TOKEN или передайте токен при запуске
 3. Запустите скрипт: python tinvest_portfolio.py --token ВАШ_ТОКЕН --output portfolio.xlsx
 """
 
@@ -30,21 +30,20 @@ except ImportError:
     sys.exit(1)
 
 try:
-    from tinkoff.invest import (
-        AccountType,
+    from t_tech.invest import (
         Client,
-        InstrumentType,
-        MoneyValue,
-        PortfolioPosition,
-        Quotation,
+        InstrumentIdType,
     )
-    from tinkoff.invest.utils import money_to_decimal, quotation_to_decimal
 except ImportError:
     print("Ошибка: Не установлен SDK Т-Инвестиций")
     print(
         "Установите: pip install t-tech-investments --index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple"
     )
     sys.exit(1)
+
+
+# Кэш для информации об инструментах
+_instruments_cache = {}
 
 
 def get_accounts(client: Client) -> list:
@@ -63,103 +62,107 @@ def get_accounts(client: Client) -> list:
     return accounts
 
 
-def get_portfolio(client: Client, account_id: str) -> dict:
+def get_portfolio(client: Client, account_id: str):
     """Получить портфель по конкретному счету."""
     portfolio = client.operations.get_portfolio(account_id=account_id)
     return portfolio
 
 
 def get_instrument_info(
-    client: Client, figi: str, instrument_type: InstrumentType
+    client: Client, figi: str, instrument_type: str, instrument_uid: str = None
 ) -> dict:
     """Получить информацию об инструменте."""
+    # Проверяем кэш
+    cache_key = figi or instrument_uid
+    if cache_key and cache_key in _instruments_cache:
+        return _instruments_cache[cache_key]
+
     try:
-        if instrument_type == InstrumentType.INSTRUMENT_TYPE_SHARE:
-            instrument = client.instruments.get_instrument(
-                id_type=1,  # FIGI
-                id=figi,
-            ).instrument
-            return {
-                "ticker": instrument.ticker,
-                "name": instrument.name,
-                "lot": instrument.lot,
-                "currency": instrument.currency,
-                "exchange": instrument.exchange,
-            }
-        elif instrument_type == InstrumentType.INSTRUMENT_TYPE_BOND:
-            instrument = client.instruments.get_instrument(
-                id_type=1, id=figi
-            ).instrument
-            return {
-                "ticker": instrument.ticker,
-                "name": instrument.name,
-                "lot": instrument.lot,
-                "currency": instrument.currency,
-                "exchange": instrument.exchange,
-            }
-        elif instrument_type == InstrumentType.INSTRUMENT_TYPE_ETF:
-            instrument = client.instruments.get_instrument(
-                id_type=1, id=figi
-            ).instrument
-            return {
-                "ticker": instrument.ticker,
-                "name": instrument.name,
-                "lot": instrument.lot,
-                "currency": instrument.currency,
-                "exchange": instrument.exchange,
-            }
-        elif instrument_type == InstrumentType.INSTRUMENT_TYPE_CURRENCY:
-            return {
-                "ticker": figi,
-                "name": f"Валюта {figi}",
-                "lot": 1,
-                "currency": "RUB",
-                "exchange": "",
-            }
+        # Определяем тип инструмента и используем соответствующий метод
+        instrument_type_upper = instrument_type.upper() if instrument_type else ""
+
+        if "SHARE" in instrument_type_upper or "Акция" in instrument_type:
+            response = client.instruments.share_by(
+                id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id=figi
+            )
+            instrument = response.instrument
+        elif "BOND" in instrument_type_upper or "Облигация" in instrument_type:
+            response = client.instruments.bond_by(
+                id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id=figi
+            )
+            instrument = response.instrument
+        elif "ETF" in instrument_type_upper or "Фонд" in instrument_type:
+            response = client.instruments.etf_by(
+                id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id=figi
+            )
+            instrument = response.instrument
+        elif "CURRENCY" in instrument_type_upper or "Валюта" in instrument_type:
+            response = client.instruments.currency_by(
+                id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id=figi
+            )
+            instrument = response.instrument
+        elif "FUTURE" in instrument_type_upper or "Фьючерс" in instrument_type:
+            response = client.instruments.future_by(
+                id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id=figi
+            )
+            instrument = response.instrument
         else:
-            return {
-                "ticker": figi,
-                "name": "Неизвестный инструмент",
-                "lot": 1,
-                "currency": "RUB",
-                "exchange": "",
-            }
+            # Пробуем общий метод get_instrument_by
+            response = client.instruments.get_instrument_by(
+                id_type=InstrumentIdType.INSTRUMENT_ID_TYPE_FIGI, id=figi
+            )
+            instrument = response.instrument
+
+        result = {
+            "ticker": instrument.ticker if hasattr(instrument, "ticker") else figi,
+            "name": instrument.name
+            if hasattr(instrument, "name")
+            else f"Инструмент {figi}",
+            "lot": instrument.lot if hasattr(instrument, "lot") else 1,
+            "currency": instrument.currency
+            if hasattr(instrument, "currency")
+            else "RUB",
+            "exchange": instrument.exchange if hasattr(instrument, "exchange") else "",
+            "nominal": None,  # Для облигаций
+        }
+
+        # Для облигаций сохраняем номинал
+        if "BOND" in instrument_type_upper and hasattr(instrument, "nominal"):
+            result["nominal"] = instrument.nominal
+
+        # Сохраняем в кэш
+        if cache_key:
+            _instruments_cache[cache_key] = result
+
+        return result
+
     except Exception as e:
-        print(f"Ошибка при получении информации об инструменте {figi}: {e}")
-        return {
+        # Возвращаем базовую информацию
+        result = {
             "ticker": figi,
             "name": f"Инструмент {figi}",
             "lot": 1,
             "currency": "RUB",
             "exchange": "",
+            "nominal": None,
         }
+        return result
 
 
 def get_current_prices(client: Client, figi_list: list) -> dict:
     """Получить текущие рыночные цены для списка инструментов."""
     prices = {}
     try:
-        # Получаем цены через get_last_prices
         response = client.market_data.get_last_prices(figi=figi_list)
         for price_info in response.last_prices:
             if price_info.price:
-                prices[price_info.figi] = quotation_to_decimal(price_info.price)
+                prices[price_info.figi] = quotation_to_float(price_info.price)
     except Exception as e:
-        print(f"Ошибка при получении цен: {e}")
+        print(f"  Внимание: Не удалось получить рыночные цены: {e}")
     return prices
 
 
-def decimal_to_float(value) -> float:
-    """Безопасно конвертировать Decimal в float."""
-    if value is None:
-        return 0.0
-    try:
-        return float(value)
-    except:
-        return 0.0
-
-
-def money_to_float(money: Optional[MoneyValue]) -> float:
+def money_to_float(money) -> float:
     """Конвертировать MoneyValue в float."""
     if money is None:
         return 0.0
@@ -169,7 +172,7 @@ def money_to_float(money: Optional[MoneyValue]) -> float:
         return 0.0
 
 
-def quotation_to_float(quot: Optional[Quotation]) -> float:
+def quotation_to_float(quot) -> float:
     """Конвертировать Quotation в float."""
     if quot is None:
         return 0.0
@@ -179,18 +182,44 @@ def quotation_to_float(quot: Optional[Quotation]) -> float:
         return 0.0
 
 
+def get_instrument_type_name(instrument_type: str) -> str:
+    """Получить читаемое название типа инструмента."""
+    if not instrument_type:
+        return "Неизвестно"
+
+    type_names = {
+        "INSTRUMENT_TYPE_UNSPECIFIED": "Не указан",
+        "INSTRUMENT_TYPE_BOND": "Облигация",
+        "INSTRUMENT_TYPE_SHARE": "Акция",
+        "INSTRUMENT_TYPE_CURRENCY": "Валюта",
+        "INSTRUMENT_TYPE_ETF": "ETF",
+        "INSTRUMENT_TYPE_FUTURES": "Фьючерс",
+        "INSTRUMENT_TYPE_OPTION": "Опцион",
+        "INSTRUMENT_TYPE_SPREAD": "Спред",
+    }
+
+    return type_names.get(instrument_type, instrument_type)
+
+
 def process_portfolio(client: Client, account_id: str) -> tuple:
     """
     Обработать портфель и вернуть данные о позициях и общую сумму.
 
     Возвращает:
         - positions: список словарей с информацией о позициях
-        - total_value: общая стоимость портфеля в рублях
+        - total_value: общая стоимость портфеля
     """
     portfolio = get_portfolio(client, account_id)
 
     positions = []
-    total_value_rub = 0.0
+    total_value = 0.0
+
+    # Используем total_amount_portfolio из API для точной общей стоимости
+    if (
+        hasattr(portfolio, "total_amount_portfolio")
+        and portfolio.total_amount_portfolio
+    ):
+        total_value = money_to_float(portfolio.total_amount_portfolio)
 
     # Собираем все FIGI для получения цен
     figi_list = [pos.figi for pos in portfolio.positions if pos.figi]
@@ -201,52 +230,94 @@ def process_portfolio(client: Client, account_id: str) -> tuple:
     # Обрабатываем каждую позицию
     for pos in portfolio.positions:
         try:
-            # Информация об инструменте
-            instrument_info = get_instrument_info(client, pos.figi, pos.instrument_type)
+            # Получаем информацию об инструменте (используем кэш)
+            instrument_info = get_instrument_info(
+                client,
+                pos.figi,
+                pos.instrument_type,
+                pos.instrument_uid if hasattr(pos, "instrument_uid") else None,
+            )
 
-            # Количество в лотах
+            # Количество
             quantity = quotation_to_float(pos.quantity)
             quantity_lots = (
-                quotation_to_float(pos.quantity_lots) if pos.quantity_lots else quantity
+                quotation_to_float(pos.quantity_lots)
+                if hasattr(pos, "quantity_lots") and pos.quantity_lots
+                else quantity
             )
+
+            # Определяем тип инструмента
+            is_bond = "BOND" in (pos.instrument_type or "").upper()
 
             # Средняя цена покупки (за единицу)
             average_price = money_to_float(pos.average_position_price)
 
             # Текущая рыночная цена
-            current_price = decimal_to_float(current_prices.get(pos.figi, 0))
-            if current_price == 0:
+            current_price = current_prices.get(pos.figi, 0)
+            if current_price == 0 and hasattr(pos, "current_price"):
                 current_price = money_to_float(pos.current_price)
 
-            # Стоимость позиции по текущей цене
-            market_value = money_to_float(pos.position_price)
+            # Для облигаций цена указывается в процентах от номинала
+            nominal = None
+            nominal_value = 1000.0  # По умолчанию номинал 1000 рублей
 
-            # Средняя стоимость позиции в портфеле
-            average_value = quantity * average_price if quantity > 0 else 0
+            if is_bond and instrument_info.get("nominal"):
+                nominal = instrument_info["nominal"]
+                nominal_value = money_to_float(nominal)
+
+            # NKD (накопленный купонный доход) для облигаций
+            nkd = money_to_float(pos.current_nkd) if hasattr(pos, "current_nkd") else 0
+
+            # Стоимость позиции по текущей цене
+            if is_bond and current_price > 0:
+                # Для облигаций: цена в % от номинала * номинал / 100 + NKD
+                # current_price = 100 означает 100% от номинала
+                market_value = quantity * (current_price * nominal_value / 100 + nkd)
+                # Средняя стоимость с учётом номинала
+                average_value = (
+                    quantity * (average_price * nominal_value / 100)
+                    if average_price > 0
+                    else 0
+                )
+                # Реальная цена за одну облигацию в рублях
+                current_price_rub = current_price * nominal_value / 100 + nkd
+                average_price_rub = average_price * nominal_value / 100
+            else:
+                # Для других инструментов
+                market_value = quantity * current_price
+                average_value = quantity * average_price if quantity > 0 else 0
+                current_price_rub = current_price
+                average_price_rub = average_price
 
             # Валюта
-            currency = (
-                pos.average_position_price.currency
-                if pos.average_position_price
-                else "RUB"
-            )
+            if hasattr(pos, "average_position_price") and pos.average_position_price:
+                currency = pos.average_position_price.currency
+            elif instrument_info.get("currency"):
+                currency = instrument_info["currency"]
+            else:
+                currency = "RUB"
 
             # Тип инструмента
-            instrument_type = (
-                pos.instrument_type.name if pos.instrument_type else "UNKNOWN"
+            instrument_type = get_instrument_type_name(pos.instrument_type)
+
+            # Тикер (приоритет из позиции, затем из информации об инструменте)
+            ticker = (
+                pos.ticker
+                if hasattr(pos, "ticker") and pos.ticker
+                else instrument_info["ticker"]
             )
 
             positions.append(
                 {
                     "figi": pos.figi,
-                    "ticker": instrument_info["ticker"],
+                    "ticker": ticker,
                     "name": instrument_info["name"],
                     "instrument_type": instrument_type,
                     "quantity": quantity,
                     "quantity_lots": quantity_lots,
                     "lot": instrument_info["lot"],
-                    "average_price": average_price,
-                    "current_price": current_price,
+                    "average_price": average_price_rub,  # Цена в рублях
+                    "current_price": current_price_rub,  # Цена в рублях
                     "market_value": market_value,
                     "average_value": average_value,
                     "currency": currency,
@@ -254,13 +325,11 @@ def process_portfolio(client: Client, account_id: str) -> tuple:
                 }
             )
 
-            total_value_rub += market_value
-
         except Exception as e:
-            print(f"Ошибка при обработке позиции {pos.figi}: {e}")
+            print(f"  Ошибка при обработке позиции {pos.figi}: {e}")
             continue
 
-    return positions, total_value_rub
+    return positions, total_value
 
 
 def create_excel_report(accounts_data: list, output_path: str, total_capital: float):
@@ -489,6 +558,33 @@ def create_excel_report(accounts_data: list, output_path: str, total_capital: fl
     print(f"\n✓ Отчёт успешно сохранён в файл: {output_path}")
 
 
+def get_account_type_name(account_type) -> str:
+    """Получить читаемое название типа счёта."""
+    if account_type is None:
+        return "Неизвестно"
+
+    # Если это enum с атрибутом name
+    if hasattr(account_type, "name"):
+        type_enum = {
+            "ACCOUNT_TYPE_UNSPECIFIED": "Не указан",
+            "ACCOUNT_TYPE_BROKER": "Брокерский",
+            "ACCOUNT_TYPE_IIS": "ИИС",
+            "ACCOUNT_TYPE_INVEST_BOX": "Инвесткопилка",
+            "ACCOUNT_TYPE_INVEST_FUND": "Инвестфонд",
+            "ACCOUNT_TYPE_TINKOFF": "Брокерский",
+            "ACCOUNT_TYPE_TINKOFF_IIS": "ИИС",
+        }
+        return type_enum.get(account_type.name, account_type.name)
+
+    # Если это число
+    type_names = {
+        1: "Брокерский",
+        2: "ИИС",
+        3: "Инвесткопилка",
+    }
+    return type_names.get(account_type, str(account_type))
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Экспорт портфеля Т-Инвестиций в Excel",
@@ -497,7 +593,7 @@ def main():
 Примеры использования:
   python tinvest_portfolio.py --token ВАШ_ТОКЕН
   python tinvest_portfolio.py --token ВАШ_ТОКЕН --output my_portfolio.xlsx
-  export TINKOFF_INVEST_TOKEN=ВАШ_ТОКЕН && python tinvest_portfolio.py
+  export TINVEST_TOKEN=ВАШ_ТОКЕН && python tinvest_portfolio.py
         """,
     )
     parser.add_argument("--token", type=str, help="Токен доступа Т-Инвестиций")
@@ -511,12 +607,16 @@ def main():
     args = parser.parse_args()
 
     # Получаем токен
-    token = args.token or os.environ.get("TINKOFF_INVEST_TOKEN")
+    token = (
+        args.token
+        or os.environ.get("TINVEST_TOKEN")
+        or os.environ.get("TINKOFF_INVEST_TOKEN")
+    )
     if not token:
         print("Ошибка: Не указан токен доступа!")
         print("Получите токен на https://www.tbank.ru/invest/settings/")
         print(
-            "И передайте его через аргумент --token или переменную окружения TINKOFF_INVEST_TOKEN"
+            "И передайте его через аргумент --token или переменную окружения TINVEST_TOKEN"
         )
         sys.exit(1)
 
@@ -544,11 +644,7 @@ def main():
 
                 positions, account_total = process_portfolio(client, account["id"])
 
-                account_type_name = {
-                    1: "Брокерский",
-                    2: "ИИС",
-                    3: "Инвесткопилка",
-                }.get(account["type"], "Другой")
+                account_type_name = get_account_type_name(account["type"])
 
                 accounts_data.append(
                     {

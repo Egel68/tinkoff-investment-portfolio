@@ -25,13 +25,13 @@ python --version
 ### 2. Создайте виртуальное окружение (рекомендуется)
 
 ```bash
-python -m venv venv
+python -m venv tinvest_venv
 
 # Linux/macOS
-source venv/bin/activate
+source tinvest_venv/bin/activate
 
 # Windows
-venv\Scripts\activate
+tinvest_venv\Scripts\activate
 ```
 
 ### 3. Установите зависимости
@@ -42,12 +42,6 @@ pip install t-tech-investments --index-url https://opensource.tbank.ru/api/v4/pr
 
 # Установка openpyxl для работы с Excel
 pip install openpyxl
-```
-
-Или одной командой:
-
-```bash
-pip install -r tinvest_requirements.txt --index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple
 ```
 
 ## Получение токена
@@ -80,15 +74,15 @@ python tinvest_portfolio.py --token ВАШ_ТОКЕН --output my_portfolio.xlsx
 
 ```bash
 # Linux/macOS
-export TINKOFF_INVEST_TOKEN=ВАШ_ТОКЕН
+export TINVEST_TOKEN=ВАШ_ТОКЕН
 python tinvest_portfolio.py
 
 # Windows (PowerShell)
-$env:TINKOFF_INVEST_TOKEN="ВАШ_ТОКЕН"
+$env:TINVEST_TOKEN="ВАШ_ТОКЕН"
 python tinvest_portfolio.py
 
 # Windows (CMD)
-set TINKOFF_INVEST_TOKEN=ВАШ_ТОКЕН
+set TINVEST_TOKEN=ВАШ_ТОКЕН
 python tinvest_portfolio.py
 ```
 
@@ -109,7 +103,7 @@ python tinvest_portfolio.py
 
 | Тикер | Название | Тип | Количество | Лотов | Валюта | Ср. цена покупки | Текущая цена | Ср. стоимость | Рын. стоимость | Доля от счета, % | Доля от капитала, % |
 |-------|----------|-----|------------|-------|--------|------------------|--------------|---------------|----------------|-------------------|---------------------|
-| SBER | Сбербанк | SHARE | 100 | 10 | RUB | 250.00 | 270.00 | 25 000 | 27 000 | 5.4% | 2.7% |
+| SBER | Сбербанк | Акция | 100 | 10 | RUB | 250.00 | 270.00 | 25 000 | 27 000 | 5.4% | 2.7% |
 | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... | ... |
 
 ### Описание колонок
@@ -118,7 +112,7 @@ python tinvest_portfolio.py
 |---------|----------|
 | Тикер | Биржевой тикер инструмента |
 | Название | Полное название инструмента |
-| Тип | Тип инструмента (SHARE, BOND, ETF, CURRENCY) |
+| Тип | Тип инструмента (Акция, Облигация, ETF, Валюта, Фьючерс) |
 | Количество | Количество единиц инструмента |
 | Лотов | Количество лотов |
 | Валюта | Валюта инструмента |
@@ -131,10 +125,12 @@ python tinvest_portfolio.py
 
 ## Типы инструментов
 
-- **SHARE** — Акции
-- **BOND** — Облигации
+- **Акция** — Акции
+- **Облигация** — Облигации
 - **ETF** — Фонды
-- **CURRENCY** — Валюты
+- **Валюта** — Валюты
+- **Фьючерс** — Фьючерсы
+- **Опцион** — Опционы
 
 ## Устранение неполадок
 
@@ -150,6 +146,14 @@ pip install openpyxl
 pip install t-tech-investments --index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple
 ```
 
+### Ошибка "ModuleNotFoundError: No module named 't_tech'"
+
+Убедитесь, что используете правильный пакет:
+```bash
+pip uninstall tinkoff-investments -y  # если установлен старый пакет
+pip install t-tech-investments --index-url https://opensource.tbank.ru/api/v4/projects/238/packages/pypi/simple
+```
+
 ### Ошибка авторизации
 
 - Проверьте правильность токена
@@ -160,6 +164,21 @@ pip install t-tech-investments --index-url https://opensource.tbank.ru/api/v4/pr
 
 - Убедитесь, что на счетах есть позиции
 - Проверьте статус счетов (должны быть активными)
+
+## Технические детали
+
+### Используемые библиотеки
+
+- **t-tech-investments** — Официальный Python SDK для T-Invest API
+- **openpyxl** — Библиотека для работы с Excel файлами
+
+### API методы
+
+Скрипт использует следующие методы API:
+- `users.get_accounts()` — Получение списка счетов
+- `operations.get_portfolio()` — Получение портфеля по счёту
+- `instruments.get_instrument()` — Получение информации об инструменте
+- `market_data.get_last_prices()` — Получение текущих цен
 
 ## Ссылки
 
